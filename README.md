@@ -4,13 +4,7 @@ A CLI tool for managing the LeptoStack local development environment. It provisi
 
 ## Installation
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/micronisus/leptostack-cli/main/leptostack.sh -o leptostack.sh
-chmod +x leptostack.sh
-sudo mv leptostack.sh /usr/local/bin/leptostack
-```
-
-Or clone the repository and link it:
+Clone the repository and install the script:
 
 ```bash
 git clone https://github.com/micronisus/leptostack-cli.git
