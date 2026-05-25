@@ -27,6 +27,28 @@ sudo ln -sf "$(pwd)/leptostack.sh" /usr/local/bin/leptostack
 leptostack <command>
 ```
 
+## Quick Start
+
+```bash
+# First-time setup
+leptostack configure
+
+# Start the environment
+leptostack start
+
+# Configure local DNS (after all kustomizations are ready)
+leptostack update-dns
+
+# Trust the internal CA certificate
+leptostack add-trust
+
+# Check status
+leptostack status
+
+# Stop when done
+leptostack stop
+```
+
 ## Commands
 
 ### `configure`
@@ -120,25 +142,3 @@ All configuration is stored at `~/.config/leptostack/config` (mode `600`). It in
 | `CLUSTER_PATH` | Path within the repo to the cluster manifests |
 | `MINIKUBE_CPUS` | Number of CPUs allocated to minikube |
 | `MINIKUBE_MEMORY` | Memory in MB allocated to minikube |
-
-## Typical Workflow
-
-```bash
-# First-time setup
-leptostack configure
-
-# Start the environment
-leptostack start
-
-# Configure local DNS (after all kustomizations are ready)
-leptostack update-dns
-
-# Trust the internal CA certificate
-leptostack add-trust
-
-# Check status
-leptostack status
-
-# Stop when done
-leptostack stop
-```
