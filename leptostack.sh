@@ -180,7 +180,21 @@ do_configure() {
     echo
 
     # Ask for PAT
-    read -rsp "Enter your Git server Personal Access Token (PAT): " GIT_PAT
+    echo -n "Enter your Git server Personal Access Token (PAT): "
+    GIT_PAT=""
+    while IFS= read -rs -n1 char; do
+        if [[ -z "$char" ]]; then
+            break
+        elif [[ "$char" == $'\x7f' || "$char" == $'\b' ]]; then
+            if [[ -n "$GIT_PAT" ]]; then
+                GIT_PAT="${GIT_PAT%?}"
+                echo -ne '\b \b'
+            fi
+        else
+            GIT_PAT+="$char"
+            echo -n '*'
+        fi
+    done
     echo
     echo
 
