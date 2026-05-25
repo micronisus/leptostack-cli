@@ -156,8 +156,8 @@ do_configure() {
     GIT_BRANCH="${GIT_BRANCH:-main}"
 
     # Ask for cluster path
-    read -rp "Enter the path to the cluster within the repo [clusters/hadeed]: " CLUSTER_PATH
-    CLUSTER_PATH="${CLUSTER_PATH:-clusters/hadeed}"
+    read -rp "Enter the path to the cluster within the repo [clusters/leptostack]: " CLUSTER_PATH
+    CLUSTER_PATH="${CLUSTER_PATH:-clusters/leptostack}"
 
     # Ask for Git server type
     echo

@@ -101,6 +101,16 @@ Installs the cluster's internal CA certificate into the system trust store:
 
 After running this command, restart your browsers for the certificate to take effect.
 
+### `port-forward <service>`
+
+Creates a port-forward to a cluster service. Supported services:
+
+- **openbao** — Verifies all Flux kustomizations are ready, displays the OpenBao root token, then forwards `localhost:8200` to the OpenBao service.
+
+```bash
+leptostack port-forward openbao
+```
+
 ## Configuration
 
 All configuration is stored at `~/.config/leptostack/config` (mode `600`). It includes:
