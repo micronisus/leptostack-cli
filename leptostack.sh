@@ -247,6 +247,47 @@ do_start() {
     # Verify kubectl context is minikube before running flux
     check_kubectl_context
 
+    # Apply LeptoStack configuration
+    echo "Applying LeptoStack configuration..."
+    kubectl apply -f - <<'LEPTOSTACK_CONFIG'
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: flux-system
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: leptostack-config
+  namespace: flux-system
+data:
+  openbao_namespace: local-openbao
+
+  supabase_namespace: local-supabase
+  supabase_pgcluster: supabase-cluster
+  supabase_hostname: supabase
+
+  keycloak_namespace: local-keycloak
+  keycloak_realm: local
+  keycloak_hostname: sso
+
+  rabbitmq_namespace: local-rabbitmq
+
+  superset_namespace: local-superset
+  superset_hostname: dashboard
+
+  flowable_namespace: local-flowable
+
+  centrifugo_namespace: local-centrifugo
+  centrifugo_hostname: realtime
+
+  camelk_namespace: local-camelk
+
+  leptostack_domain: minikube.test
+  leptostack_name: portal
+LEPTOSTACK_CONFIG
+    echo
+
     # Export PAT based on git server
     case "$GIT_SERVER" in
         github)
@@ -467,21 +508,57 @@ do_add_trust() {
     echo "Please restart your browsers for the new CA certificate to take effect."
 }
 
+# --- Port Forward ---
+
+do_port_forward() {
+    local service="$1"
+
+    case "$service" in
+        openbao)
+            check_kubectl_context
+
+            echo "Checking if all kustomizations are ready..."
+            local not_ready
+            not_ready=$(flux get kustomizations --status-selector ready=false --no-header | wc -l)
+            if [[ "$not_ready" -gt 0 ]]; then
+                echo "Error: $not_ready kustomization(s) are not ready. Please wait for all kustomizations to become ready."
+                echo "Run '$0 status' to check progress."
+                exit 1
+            fi
+            echo "All kustomizations are ready."
+            echo
+
+            echo "OpenBao root token:"
+            kubectl -n local-openbao get secrets openbao-init -o json | jq -r '.data.root_token | @base64d'
+            echo
+
+            echo "Starting port-forward for OpenBao (localhost:8200)..."
+            kubectl -n local-openbao port-forward services/local-openbao-openbao 8200:8200
+            ;;
+        *)
+            echo "Error: Unknown service '$service'."
+            echo "Supported services: openbao"
+            exit 1
+            ;;
+    esac
+}
+
 # --- Main ---
 
 usage() {
-    echo "Usage: $0 {configure|start|stop|status|reset|reconcile|events|update-dns|add-trust}"
+    echo "Usage: $0 {configure|start|stop|status|reset|reconcile|events|update-dns|add-trust|port-forward}"
     echo
     echo "Commands:"
-    echo "  configure   Set up the development environment configuration"
-    echo "  start       Start LeptoStack"
-    echo "  stop        Stop LeptoStack"
-    echo "  status      Check LeptoStack status"
-    echo "  reset       Delete LeptoStack cluster and restart"
-    echo "  reconcile   Reconcile flux-system kustomization"
-    echo "  events      Watch all cluster events"
-    echo "  update-dns  Configure local DNS to resolve *.test via minikube"
-    echo "  add-trust   Add the internal CA certificate to system trust store"
+    echo "  configure      Set up the development environment configuration"
+    echo "  start          Start LeptoStack"
+    echo "  stop           Stop LeptoStack"
+    echo "  status         Check LeptoStack status"
+    echo "  reset          Delete LeptoStack cluster and restart"
+    echo "  reconcile      Reconcile flux-system kustomization"
+    echo "  events         Watch all cluster events"
+    echo "  update-dns     Configure local DNS to resolve *.test via minikube"
+    echo "  add-trust      Add the internal CA certificate to system trust store"
+    echo "  port-forward   Port-forward a service (openbao)"
     exit 1
 }
 
@@ -490,14 +567,21 @@ if [[ $# -lt 1 ]]; then
 fi
 
 case "$1" in
-    configure)   do_configure ;;
-    start)       do_start ;;
-    stop)        do_stop ;;
-    status)      do_status ;;
-    reset)       do_reset ;;
-    reconcile)   do_reconcile ;;
-    events)      do_events ;;
-    update-dns)  do_update_dns ;;
-    add-trust)   do_add_trust ;;
-    *)           usage ;;
+    configure)     do_configure ;;
+    start)         do_start ;;
+    stop)          do_stop ;;
+    status)        do_status ;;
+    reset)         do_reset ;;
+    reconcile)     do_reconcile ;;
+    events)        do_events ;;
+    update-dns)    do_update_dns ;;
+    add-trust)     do_add_trust ;;
+    port-forward)
+        if [[ $# -lt 2 ]]; then
+            echo "Usage: $0 port-forward {openbao}"
+            exit 1
+        fi
+        do_port_forward "$2"
+        ;;
+    *)             usage ;;
 esac
