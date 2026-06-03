@@ -367,7 +367,11 @@ do_status() {
     check_kubectl_context
 
     echo "Minikube status:"
-    minikube status || true
+    if ! minikube status; then
+        echo
+        echo "Minikube is not running. Start it with: $0 start"
+        return
+    fi
     echo
 
     echo "Flux version:"
@@ -549,9 +553,127 @@ do_port_forward() {
             echo "Starting port-forward for OpenBao (localhost:8200)..."
             kubectl -n local-openbao port-forward services/local-openbao-openbao 8200:8200
             ;;
+        rabbitmq)
+            check_kubectl_context
+
+            echo "Checking if all kustomizations are ready..."
+            local not_ready
+            not_ready=$(flux get kustomizations --status-selector ready=false --no-header | wc -l)
+            if [[ "$not_ready" -gt 0 ]]; then
+                echo "Error: $not_ready kustomization(s) are not ready. Please wait for all kustomizations to become ready."
+                echo "Run '$0 status' to check progress."
+                exit 1
+            fi
+            echo "All kustomizations are ready."
+            echo
+
+            echo "RabbitMQ credentials:"
+            echo "  Username: $(kubectl -n local-rabbitmq get secret local-rabbitmq-default-user -o jsonpath='{.data.username}' | base64 -d)"
+            echo "  Password: $(kubectl -n local-rabbitmq get secret local-rabbitmq-default-user -o jsonpath='{.data.password}' | base64 -d)"
+            echo
+
+            echo "Starting port-forward for RabbitMQ Management (localhost:15672)..."
+            kubectl -n local-rabbitmq port-forward services/local-rabbitmq 15672:15672
+            ;;
         *)
             echo "Error: Unknown service '$service'."
-            echo "Supported services: openbao"
+            echo "Supported services: openbao, rabbitmq"
+            exit 1
+            ;;
+    esac
+}
+
+# --- Completion ---
+
+do_completion() {
+    local shell="$1"
+
+    case "$shell" in
+        bash)
+            cat <<'BASH_COMPLETION'
+_leptostack() {
+    local cur prev commands port_forward_services
+    COMPREPLY=()
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+
+    commands="configure start stop status reset reconcile events update-dns add-trust port-forward completion"
+    port_forward_services="openbao rabbitmq"
+
+    if [[ ${COMP_CWORD} -eq 1 ]]; then
+        COMPREPLY=( $(compgen -W "${commands}" -- "${cur}") )
+        return 0
+    fi
+
+    case "${prev}" in
+        port-forward)
+            COMPREPLY=( $(compgen -W "${port_forward_services}" -- "${cur}") )
+            return 0
+            ;;
+        completion)
+            COMPREPLY=( $(compgen -W "zsh bash" -- "${cur}") )
+            return 0
+            ;;
+    esac
+}
+complete -F _leptostack leptostack
+BASH_COMPLETION
+            ;;
+        zsh)
+            cat <<'ZSH_COMPLETION'
+#compdef leptostack
+
+_leptostack() {
+    local -a commands
+    commands=(
+        'configure:Set up the development environment configuration'
+        'start:Start LeptoStack'
+        'stop:Stop LeptoStack'
+        'status:Check LeptoStack status'
+        'reset:Delete LeptoStack cluster and restart'
+        'reconcile:Reconcile flux-system kustomization'
+        'events:Watch all cluster events'
+        'update-dns:Configure local DNS to resolve *.test via minikube'
+        'add-trust:Add the internal CA certificate to system trust store'
+        'port-forward:Port-forward a service'
+        'completion:Generate shell completion script'
+    )
+
+    _arguments -C \
+        '1:command:->command' \
+        '*::arg:->args'
+
+    case $state in
+        command)
+            _describe -t commands 'leptostack command' commands
+            ;;
+        args)
+            case $words[1] in
+                port-forward)
+                    local -a services
+                    services=('openbao:Port-forward OpenBao' 'rabbitmq:Port-forward RabbitMQ')
+                    _describe -t services 'service' services
+                    ;;
+                completion)
+                    local -a shells
+                    shells=('zsh:Generate zsh completion' 'bash:Generate bash completion')
+                    _describe -t shells 'shell' shells
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+compdef _leptostack leptostack
+ZSH_COMPLETION
+            ;;
+        *)
+            echo "Error: Unsupported shell '$shell'."
+            echo "Supported shells: zsh, bash"
+            echo
+            echo "Usage:"
+            echo "  eval \"\$($0 completion bash)\"   # for bash"
+            echo "  eval \"\$($0 completion zsh)\"    # for zsh"
             exit 1
             ;;
     esac
@@ -572,7 +694,8 @@ usage() {
     echo "  events         Watch all cluster events"
     echo "  update-dns     Configure local DNS to resolve *.test via minikube"
     echo "  add-trust      Add the internal CA certificate to system trust store"
-    echo "  port-forward   Port-forward a service (openbao)"
+    echo "  port-forward   Port-forward a service (openbao, rabbitmq)"
+    echo "  completion     Generate shell completion script (zsh, bash)"
     exit 1
 }
 
@@ -592,10 +715,17 @@ case "$1" in
     add-trust)     do_add_trust ;;
     port-forward)
         if [[ $# -lt 2 ]]; then
-            echo "Usage: $0 port-forward {openbao}"
+            echo "Usage: $0 port-forward {openbao|rabbitmq}"
             exit 1
         fi
         do_port_forward "$2"
+        ;;
+    completion)
+        if [[ $# -lt 2 ]]; then
+            echo "Usage: $0 completion {zsh|bash}"
+            exit 1
+        fi
+        do_completion "$2"
         ;;
     *)             usage ;;
 esac
