@@ -297,8 +297,37 @@ data:
 
   camelk_namespace: local-camelk
 
+  seaweedfs_namespace: local-seaweedfs
+  seaweedfs_hostname: storage
+
   leptostack_domain: minikube.test
   leptostack_name: portal
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    cert-manager.io/cluster-issuer: internal-issuer
+    nginx.ingress.kubernetes.io/proxy-body-size: 5g
+  name: registry-ingress
+  namespace: kube-system
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - registry.minikube.test
+      secretName: registry-tls
+  rules:
+  - host: registry.minikube.test
+    http:
+      paths:
+      - backend:
+          service:
+            name: registry
+            port:
+              number: 80
+        path: /
+        pathType: Prefix
 LEPTOSTACK_CONFIG
     echo
 
