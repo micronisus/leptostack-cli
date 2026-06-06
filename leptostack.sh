@@ -248,7 +248,7 @@ do_start() {
 
     # Start minikube
     echo "Starting minikube..."
-    minikube start
+    minikube start --insecure-registry "registry.minikube.test"
     echo
 
     echo "Enabling minikube addons..."
@@ -597,12 +597,12 @@ do_port_forward() {
             echo
 
             echo "RabbitMQ credentials:"
-            echo "  Username: $(kubectl -n local-rabbitmq get secret local-rabbitmq-default-user -o jsonpath='{.data.username}' | base64 -d)"
-            echo "  Password: $(kubectl -n local-rabbitmq get secret local-rabbitmq-default-user -o jsonpath='{.data.password}' | base64 -d)"
+            echo "  Username: $(kubectl -n local-rabbitmq get secret portal-rabbitmq-default-user -o jsonpath='{.data.username}' | base64 -d)"
+            echo "  Password: $(kubectl -n local-rabbitmq get secret portal-rabbitmq-default-user -o jsonpath='{.data.password}' | base64 -d)"
             echo
 
             echo "Starting port-forward for RabbitMQ Management (localhost:15672)..."
-            kubectl -n local-rabbitmq port-forward services/local-rabbitmq 15672:15672
+            kubectl -n local-rabbitmq port-forward services/portal-rabbitmq 15672:15672
             ;;
         *)
             echo "Error: Unknown service '$service'."
