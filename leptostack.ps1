@@ -300,6 +300,9 @@ data:
 
   camelk_namespace: local-camelk
 
+  seaweedfs_namespace: local-seaweedfs
+  seaweedfs_hostname: storage
+
   leptostack_domain: minikube.test
   leptostack_name: portal
 "@ | kubectl apply -f -
