@@ -21,6 +21,16 @@ sudo ln -sf "$(pwd)/leptostack.sh" /usr/local/bin/leptostack
 - **Flux CLI:** >= 2.8.7 ([Install](https://fluxcd.io/flux/installation/))
 - **NetworkManager** configured with the dnsmasq plugin (required for `update-dns`)
 
+
+## Installation on Fedora
+
+- Check for kubectl if not ask the user to install
+- Ask the user to configure Podman Driver without CPU or Memory
+- Check if auth details for docker.io have been configured else give a warning
+- Configure Minikube for Podman (add sudoers file for NOPASSWD)
+- Update the ulimit for Podman (/etc/containers/containers.conf)
+- Update 
+
 ## Usage
 
 ```bash

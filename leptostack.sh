@@ -16,13 +16,12 @@ detect_distro() {
         source /etc/os-release
         case "$ID" in
             fedora) distro="fedora" ;;
-            ubuntu) distro="ubuntu" ;;
             arch)   distro="arch" ;;
         esac
     fi
     if [[ -z "$distro" ]]; then
         echo "Error: Unsupported Linux distribution."
-        echo "Supported distributions: Fedora, Ubuntu, Arch Linux."
+        echo "Supported distributions: Fedora, Arch Linux."
         exit 1
     fi
     echo "$distro"
@@ -75,6 +74,15 @@ do_configure() {
     echo "=== LeptoStack Configuration ==="
     echo
 
+    # Check kubectl
+    echo "Checking kubectl..."
+    if ! command -v kubectl &>/dev/null; then
+        echo "Error: kubectl is not installed."
+        echo "Please install it from: https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/#install-using-native-package-management"
+        exit 1
+    fi
+    echo "  kubectl OK"
+
     # Check minikube
     echo "Checking minikube..."
     if ! command -v minikube &>/dev/null; then
@@ -122,6 +130,99 @@ do_configure() {
         if [[ ! "$continue_anyway" =~ ^[Yy]$ ]]; then
             echo "Aborted."
             exit 1
+        fi
+        echo
+    fi
+
+    # Check podman and configure as minikube driver
+    echo "Checking podman..."
+    if ! command -v podman &>/dev/null; then
+        echo "Error: podman is not installed."
+        echo "Please install podman for your distribution:"
+        case "$DISTRO" in
+            fedora) echo "  sudo dnf install podman" ;;
+            arch)   echo "  sudo pacman -S podman" ;;
+        esac
+        exit 1
+    fi
+    echo "  podman OK"
+    echo
+
+    # Set minikube driver to podman
+    echo "Setting minikube driver to podman..."
+    minikube config set driver podman
+    echo
+
+    # Enable passwordless sudo for podman
+    echo "Configuring passwordless sudo for podman..."
+    local sudoers_line="${USER} ALL=(ALL) NOPASSWD: /usr/bin/podman"
+    local sudoers_file="/etc/sudoers.d/podman"
+    if [[ -f "$sudoers_file" ]] && grep -qF "$sudoers_line" "$sudoers_file"; then
+        echo "  Already configured."
+    else
+        echo "$sudoers_line" | sudo tee "$sudoers_file" > /dev/null
+        sudo chmod 440 "$sudoers_file"
+        echo "  Created $sudoers_file"
+    fi
+    echo
+
+    # Check docker.io authentication
+    echo "Checking docker.io authentication..."
+    if ! podman login --get-login docker.io &>/dev/null; then
+        echo "  WARNING: You are not authenticated to docker.io."
+        echo "  Without authentication you may reach Docker Hub rate limits."
+        echo "  To authenticate, run: podman login docker.io"
+        echo
+    else
+        echo "  docker.io authentication OK"
+        echo
+    fi
+
+    # Check pids_limit in /etc/containers/containers.conf
+    echo "Checking containers pids_limit configuration..."
+    local containers_conf="/etc/containers/containers.conf"
+    if [[ -f "$containers_conf" ]] && grep -q '^pids_limit = 0' "$containers_conf"; then
+        echo "  pids_limit = 0 already set."
+    elif [[ -f "$containers_conf" ]]; then
+        # File exists (e.g. Arch) — replace commented or existing pids_limit line
+        if grep -q '^#.*pids_limit' "$containers_conf"; then
+            sudo sed -i 's/^#.*pids_limit.*/pids_limit = 0/' "$containers_conf"
+            echo "  Uncommented and set pids_limit = 0 in $containers_conf"
+        else
+            # Append under [containers] section if it exists, otherwise append to end
+            if grep -q '^\[containers\]' "$containers_conf"; then
+                sudo sed -i '/^\[containers\]/a pids_limit = 0' "$containers_conf"
+            else
+                printf '\n[containers]\npids_limit = 0\n' | sudo tee -a "$containers_conf" > /dev/null
+            fi
+            echo "  Added pids_limit = 0 to $containers_conf"
+        fi
+    else
+        # File doesn't exist (e.g. Fedora) — create it
+        printf '[containers]\npids_limit = 0\n' | sudo tee "$containers_conf" > /dev/null
+        echo "  Created $containers_conf with pids_limit = 0"
+    fi
+    echo
+
+    # Fedora-only: configure inotify sysctl settings
+    if [[ "$DISTRO" == "fedora" ]]; then
+        echo "Configuring inotify sysctl settings..."
+        local sysctl_file="/etc/sysctl.d/10-inotify.conf"
+        local needs_update=false
+
+        if [[ ! -f "$sysctl_file" ]]; then
+            needs_update=true
+        elif ! grep -q 'fs.inotify.max_user_instances = 1024' "$sysctl_file" || \
+             ! grep -q 'fs.inotify.max_user_watches = 524288' "$sysctl_file"; then
+            needs_update=true
+        fi
+
+        if [[ "$needs_update" == "true" ]]; then
+            printf 'fs.inotify.max_user_instances = 1024\nfs.inotify.max_user_watches = 524288\n' | sudo tee "$sysctl_file" > /dev/null
+            sudo sysctl --system > /dev/null 2>&1
+            echo "  Applied inotify settings to $sysctl_file"
+        else
+            echo "  inotify settings already configured."
         fi
         echo
     fi
@@ -196,6 +297,40 @@ do_configure() {
         fi
     done
     echo
+    echo
+
+    # Validate repository accessibility with PAT
+    echo "Validating repository access..."
+    local api_url http_code
+    case "$GIT_SERVER" in
+        github)
+            api_url="https://api.github.com/repos/${GIT_OWNER}/${GIT_REPO}"
+            http_code=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: token ${GIT_PAT}" "$api_url")
+            ;;
+        gitea)
+            api_url="https://${GIT_HOSTNAME}/api/v1/repos/${GIT_OWNER}/${GIT_REPO}"
+            http_code=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: token ${GIT_PAT}" "$api_url")
+            ;;
+        gitlab)
+            local encoded_path
+            encoded_path=$(printf '%s' "${GIT_OWNER}/${GIT_REPO}" | sed 's/\//%2F/g')
+            api_url="https://${GIT_HOSTNAME}/api/v4/projects/${encoded_path}"
+            http_code=$(curl -s -o /dev/null -w "%{http_code}" -H "PRIVATE-TOKEN: ${GIT_PAT}" "$api_url")
+            ;;
+    esac
+
+    if [[ "$http_code" == "200" ]]; then
+        echo "  Repository access validated successfully."
+    elif [[ "$http_code" == "401" || "$http_code" == "403" ]]; then
+        echo "Error: Authentication failed (HTTP $http_code). Please check your PAT has the correct permissions."
+        exit 1
+    elif [[ "$http_code" == "404" ]]; then
+        echo "Error: Repository not found (HTTP 404). Please verify the repository URL and that your PAT has access."
+        exit 1
+    else
+        echo "Error: Could not access repository (HTTP $http_code). Please verify the URL and PAT."
+        exit 1
+    fi
     echo
 
     # Check minikube configuration
@@ -479,20 +614,27 @@ do_update_dns() {
     fi
 
     if [[ "$nm_uses_dnsmasq" != "true" ]]; then
-        echo "Error: NetworkManager is not configured with the dnsmasq plugin."
-        echo "Please configure NetworkManager to use dnsmasq:"
+        echo "NetworkManager is not configured with the dnsmasq plugin."
         case "$DISTRO" in
             fedora)
-                echo "  https://docs.fedoraproject.org/en-US/fedora-server/administration/dnsmasq/"
+                echo "Configuring NetworkManager to use dnsmasq..."
+                sudo systemctl disable --now systemd-resolved
+                sudo rm -f /etc/resolv.conf
+                if grep -q '^\[main\]' /etc/NetworkManager/NetworkManager.conf 2>/dev/null; then
+                    sudo sed -i '/^\[main\]/a dns=dnsmasq' /etc/NetworkManager/NetworkManager.conf
+                else
+                    printf '[main]\ndns=dnsmasq\n' | sudo tee -a /etc/NetworkManager/NetworkManager.conf > /dev/null
+                fi
+                sudo systemctl restart NetworkManager
+                echo "  dnsmasq plugin configured successfully."
                 ;;
             arch)
+                echo "Please configure NetworkManager to use dnsmasq:"
                 echo "  https://wiki.archlinux.org/title/NetworkManager#dnsmasq"
-                ;;
-            ubuntu)
-                echo "  https://manpages.ubuntu.com/manpages/focal/man5/NetworkManager.conf.5.html"
+                exit 1
                 ;;
         esac
-        exit 1
+        echo
     fi
 
     echo "NetworkManager dnsmasq plugin detected."
@@ -541,11 +683,8 @@ do_add_trust() {
             ;;
         fedora)
             sudo cp "$tmp_ca" /etc/pki/ca-trust/source/anchors/minikube.test.crt
+            sudo chmod 644 /etc/pki/ca-trust/source/anchors/minikube.test.crt
             sudo update-ca-trust
-            ;;
-        ubuntu)
-            sudo cp "$tmp_ca" /usr/local/share/ca-certificates/minikube.test.crt
-            sudo update-ca-certificates
             ;;
     esac
 
