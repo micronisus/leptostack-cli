@@ -180,7 +180,10 @@ do_configure() {
 
     # Check pids_limit in /etc/containers/containers.conf
     echo "Checking containers pids_limit configuration..."
-    local containers_conf="/etc/containers/containers.conf"
+    local containers_conf="/etc/containers/containers.conf.d/minikube.conf"
+    if [[ ! -d "/etc/containers/containers.conf.d" ]]; then
+        sudo mkdir -p /etc/containers/containers.conf.d
+    fi
     if [[ -f "$containers_conf" ]] && grep -q '^pids_limit = 0' "$containers_conf"; then
         echo "  pids_limit = 0 already set."
     elif [[ -f "$containers_conf" ]]; then
@@ -383,12 +386,11 @@ do_start() {
 
     # Start minikube
     echo "Starting minikube..."
-    minikube start --insecure-registry "registry.minikube.test"
+    minikube start --insecure-registry="registry.minikube.test"
     echo
 
     echo "Enabling minikube addons..."
-    minikube addons enable ingress
-    minikube addons enable ingress-dns
+    minikube addons enable metallb
     minikube addons enable registry
     minikube addons enable metrics-server
     echo
@@ -398,11 +400,27 @@ do_start() {
 
     # Apply LeptoStack configuration
     echo "Applying LeptoStack configuration..."
-    kubectl --context minikube apply -f - <<'LEPTOSTACK_CONFIG'
+    local minikube_ip subnet
+    minikube_ip=$(minikube ip)
+    subnet=$(echo "$minikube_ip" | cut -d'.' -f1-3)
+    kubectl --context minikube apply -f - <<LEPTOSTACK_CONFIG
 apiVersion: v1
 kind: Namespace
 metadata:
   name: flux-system
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: config
+  namespace: metallb-system
+data:
+  config: |
+    address-pools:
+    - name: default
+      protocol: layer2
+      addresses:
+      - ${subnet}.100-${subnet}.110
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -435,6 +453,8 @@ data:
   seaweedfs_namespace: local-seaweedfs
   seaweedfs_hostname: storage
 
+  apisix_lb_ip: ${subnet}.100
+
   leptostack_domain: minikube.test
   leptostack_name: portal
 ---
@@ -443,11 +463,11 @@ kind: Ingress
 metadata:
   annotations:
     cert-manager.io/cluster-issuer: internal-issuer
-    nginx.ingress.kubernetes.io/proxy-body-size: 5g
+    k8s.apisix.apache.org/plugin-config-name: registry-plugin-config
   name: registry-ingress
   namespace: kube-system
 spec:
-  ingressClassName: nginx
+  ingressClassName: apisix
   tls:
     - hosts:
         - registry.minikube.test
@@ -464,6 +484,7 @@ spec:
         path: /
         pathType: Prefix
 LEPTOSTACK_CONFIG
+    echo "  MetalLB configured with range ${subnet}.100-${subnet}.110"
     echo
 
     # Export PAT based on git server
@@ -639,11 +660,13 @@ do_update_dns() {
 
     echo "NetworkManager dnsmasq plugin detected."
     echo "Configuring DNS for minikube..."
-    local minikube_ip
+    local minikube_ip subnet lb_ip
     minikube_ip=$(minikube ip)
-    echo "server=/test/${minikube_ip}" | sudo tee /etc/NetworkManager/dnsmasq.d/minikube.conf > /dev/null
+    subnet=$(echo "$minikube_ip" | cut -d'.' -f1-3)
+    lb_ip="${subnet}.100"
+    echo "address=/test/${lb_ip}" | sudo tee /etc/NetworkManager/dnsmasq.d/minikube.conf > /dev/null
     sudo systemctl restart NetworkManager
-    echo "DNS configuration updated. *.test domains now resolve to ${minikube_ip}."
+    echo "DNS configuration updated. *.test domains now resolve to ${lb_ip}."
 }
 
 # --- Add Trust ---
