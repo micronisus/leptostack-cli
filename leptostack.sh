@@ -390,9 +390,15 @@ do_start() {
     echo
 
     echo "Enabling minikube addons..."
-    minikube addons enable metallb
-    minikube addons enable registry
-    minikube addons enable metrics-server
+    local enabled_addons
+    enabled_addons=$(minikube addons list --output=json 2>/dev/null)
+    for addon in metallb registry metrics-server; do
+        if echo "$enabled_addons" | grep -q "\"$addon\":{\"Profile\":\"minikube\",\"Status\":\"enabled\""; then
+            echo "  $addon already enabled, skipping."
+        else
+            minikube addons enable "$addon"
+        fi
+    done
     echo
 
     # Verify kubectl context is minikube before running flux
@@ -487,58 +493,65 @@ LEPTOSTACK_CONFIG
     echo "  MetalLB configured with range ${subnet}.100-${subnet}.110"
     echo
 
-    # Export PAT based on git server
-    case "$GIT_SERVER" in
-        github)
-            export GITHUB_TOKEN="$GIT_PAT"
-            ;;
-        gitea)
-            export GITEA_TOKEN="$GIT_PAT"
-            ;;
-        gitlab)
-            export GITLAB_TOKEN="$GIT_PAT"
-            ;;
-    esac
+    # Check if flux is already bootstrapped
+    if kubectl --context minikube -n flux-system get deployment source-controller &>/dev/null; then
+        echo "Flux is already bootstrapped, skipping bootstrap."
+        echo "You can check the status of the deployment by running:"
+        echo "  flux get kustomizations"
+    else
+        # Export PAT based on git server
+        case "$GIT_SERVER" in
+            github)
+                export GITHUB_TOKEN="$GIT_PAT"
+                ;;
+            gitea)
+                export GITEA_TOKEN="$GIT_PAT"
+                ;;
+            gitlab)
+                export GITLAB_TOKEN="$GIT_PAT"
+                ;;
+        esac
 
-    # Run flux bootstrap
-    echo "Running flux bootstrap for $GIT_SERVER..."
-    echo
+        # Run flux bootstrap
+        echo "Running flux bootstrap for $GIT_SERVER..."
+        echo
 
-    case "$GIT_SERVER" in
-        github)
-            flux --context minikube bootstrap github \
-                --token-auth \
-                --owner="$GIT_OWNER" \
-                --repository="$GIT_REPO" \
-                --branch="$GIT_BRANCH" \
-                --path="$CLUSTER_PATH" \
-                --personal
-            ;;
-        gitea)
-            flux --context minikube bootstrap gitea \
-                --token-auth \
-                --hostname="$GIT_HOSTNAME" \
-                --owner="$GIT_OWNER" \
-                --repository="$GIT_REPO" \
-                --branch="$GIT_BRANCH" \
-                --path="$CLUSTER_PATH" \
-                --personal
-            ;;
-        gitlab)
-            flux --context minikube bootstrap gitlab \
-                --token-auth \
-                --hostname="$GIT_HOSTNAME" \
-                --owner="$GIT_OWNER" \
-                --repository="$GIT_REPO" \
-                --branch="$GIT_BRANCH" \
-                --path="$CLUSTER_PATH"
-            ;;
-    esac
+        case "$GIT_SERVER" in
+            github)
+                flux --context minikube bootstrap github \
+                    --token-auth \
+                    --owner="$GIT_OWNER" \
+                    --repository="$GIT_REPO" \
+                    --branch="$GIT_BRANCH" \
+                    --path="$CLUSTER_PATH" \
+                    --personal
+                ;;
+            gitea)
+                flux --context minikube bootstrap gitea \
+                    --token-auth \
+                    --hostname="$GIT_HOSTNAME" \
+                    --owner="$GIT_OWNER" \
+                    --repository="$GIT_REPO" \
+                    --branch="$GIT_BRANCH" \
+                    --path="$CLUSTER_PATH" \
+                    --personal
+                ;;
+            gitlab)
+                flux --context minikube bootstrap gitlab \
+                    --token-auth \
+                    --hostname="$GIT_HOSTNAME" \
+                    --owner="$GIT_OWNER" \
+                    --repository="$GIT_REPO" \
+                    --branch="$GIT_BRANCH" \
+                    --path="$CLUSTER_PATH"
+                ;;
+        esac
 
-    echo
-    echo "Flux bootstrap has been started."
-    echo "You can check the status of the deployment by running:"
-    echo "  flux get kustomizations"
+        echo
+        echo "Flux bootstrap has been started."
+        echo "You can check the status of the deployment by running:"
+        echo "  flux get kustomizations"
+    fi
 }
 
 # --- Status ---
