@@ -64,6 +64,8 @@ GIT_BRANCH="${GIT_BRANCH}"
 CLUSTER_PATH="${CLUSTER_PATH}"
 MINIKUBE_CPUS="${MINIKUBE_CPUS}"
 MINIKUBE_MEMORY="${MINIKUBE_MEMORY}"
+RESOURCES_GIT_PATH="${RESOURCES_GIT_PATH}"
+RESOURCES_GIT_PAT="${RESOURCES_GIT_PAT}"
 EOF
     chmod 600 "$CONFIG_FILE"
 }
@@ -302,6 +304,38 @@ do_configure() {
     echo
     echo
 
+    # Ask for LeptoStack Resources Git Repository
+    echo
+    read -rp "Enter the LeptoStack Resources Git Repository Path (e.g. owner/repo): " RESOURCES_GIT_PATH
+    if [[ -z "$RESOURCES_GIT_PATH" ]]; then
+        echo "Error: LeptoStack Resources Git Repository Path cannot be empty."
+        exit 1
+    fi
+    echo
+
+    # Ask for LeptoStack Resources Git Repository PAT
+    echo -n "Enter the LeptoStack Resources Git Repository PAT: "
+    RESOURCES_GIT_PAT=""
+    while IFS= read -rs -n1 char; do
+        if [[ -z "$char" ]]; then
+            break
+        elif [[ "$char" == $'\x7f' || "$char" == $'\b' ]]; then
+            if [[ -n "$RESOURCES_GIT_PAT" ]]; then
+                RESOURCES_GIT_PAT="${RESOURCES_GIT_PAT%?}"
+                echo -ne '\b \b'
+            fi
+        else
+            RESOURCES_GIT_PAT+="$char"
+            echo -n '*'
+        fi
+    done
+    echo
+    if [[ -z "$RESOURCES_GIT_PAT" ]]; then
+        echo "Error: LeptoStack Resources Git Repository PAT cannot be empty."
+        exit 1
+    fi
+    echo
+
     # Validate repository accessibility with PAT
     echo "Validating repository access..."
     local api_url http_code
@@ -386,7 +420,7 @@ do_start() {
 
     # Start minikube
     echo "Starting minikube..."
-    minikube start --insecure-registry="registry.minikube.test"
+    minikube start --cni=calico --insecure-registry="registry.minikube.test"
     echo
 
     echo "Enabling minikube addons..."
@@ -403,95 +437,6 @@ do_start() {
 
     # Verify kubectl context is minikube before running flux
     check_kubectl_context
-
-    # Apply LeptoStack configuration
-    echo "Applying LeptoStack configuration..."
-    local minikube_ip subnet
-    minikube_ip=$(minikube ip)
-    subnet=$(echo "$minikube_ip" | cut -d'.' -f1-3)
-    kubectl --context minikube apply -f - <<LEPTOSTACK_CONFIG
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: flux-system
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: config
-  namespace: metallb-system
-data:
-  config: |
-    address-pools:
-    - name: default
-      protocol: layer2
-      addresses:
-      - ${subnet}.100-${subnet}.110
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: leptostack-config
-  namespace: flux-system
-data:
-  openbao_namespace: local-openbao
-
-  supabase_namespace: local-supabase
-  supabase_pgcluster: supabase-cluster
-  supabase_hostname: supabase
-
-  keycloak_namespace: local-keycloak
-  keycloak_realm: local
-  keycloak_hostname: sso
-
-  rabbitmq_namespace: local-rabbitmq
-
-  superset_namespace: local-superset
-  superset_hostname: dashboard
-
-  flowable_namespace: local-flowable
-
-  centrifugo_namespace: local-centrifugo
-  centrifugo_hostname: realtime
-
-  camelk_namespace: local-camelk
-
-  seaweedfs_namespace: local-seaweedfs
-  seaweedfs_hostname: storage
-
-  apisix_lb_ip: ${subnet}.100
-
-  leptostack_domain: minikube.test
-  leptostack_name: portal
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  annotations:
-    cert-manager.io/cluster-issuer: internal-issuer
-    k8s.apisix.apache.org/plugin-config-name: registry-plugin-config
-  name: registry-ingress
-  namespace: kube-system
-spec:
-  ingressClassName: apisix
-  tls:
-    - hosts:
-        - registry.minikube.test
-      secretName: registry-tls
-  rules:
-  - host: registry.minikube.test
-    http:
-      paths:
-      - backend:
-          service:
-            name: registry
-            port:
-              number: 80
-        path: /
-        pathType: Prefix
-LEPTOSTACK_CONFIG
-    echo "  MetalLB configured with range ${subnet}.100-${subnet}.110"
-    echo
 
     # Check if flux is already bootstrapped
     if kubectl --context minikube -n flux-system get deployment source-controller &>/dev/null; then
@@ -552,6 +497,18 @@ LEPTOSTACK_CONFIG
         echo "You can check the status of the deployment by running:"
         echo "  flux get kustomizations"
     fi
+
+    # Create leptostack-base secret in flux-system namespace
+    echo
+    echo "Creating leptostack-base secret in flux-system namespace..."
+    if kubectl --context minikube -n flux-system get secret leptostack-base &>/dev/null; then
+        echo "  Secret leptostack-base already exists, updating..."
+        kubectl --context minikube -n flux-system delete secret leptostack-base
+    fi
+    kubectl --context minikube -n flux-system create secret generic leptostack-base \
+        --from-literal=username=git \
+        --from-literal=password="$RESOURCES_GIT_PAT"
+    echo "  Secret leptostack-base created successfully."
 }
 
 # --- Status ---
