@@ -410,9 +410,208 @@ do_configure() {
     echo "  $0 start"
 }
 
+# --- Patch Flux System Kustomization ---
+
+patch_flux_system_kustomization() {
+    echo
+    echo "Patching flux-system kustomization.yaml..."
+
+    local tmp_dir
+    tmp_dir=$(mktemp -d /tmp/leptostack-flux-patch-XXXXXX)
+    trap 'rm -rf "$tmp_dir"' EXIT
+
+    # Build the clone URL with the PAT embedded for authentication
+    local clone_url
+    case "$GIT_SERVER" in
+        github)
+            clone_url="https://${GIT_PAT}@github.com/${GIT_OWNER}/${GIT_REPO}.git"
+            ;;
+        gitea)
+            clone_url="https://${GIT_PAT}@${GIT_HOSTNAME}/${GIT_OWNER}/${GIT_REPO}.git"
+            ;;
+        gitlab)
+            clone_url="https://oauth2:${GIT_PAT}@${GIT_HOSTNAME}/${GIT_OWNER}/${GIT_REPO}.git"
+            ;;
+    esac
+
+    echo "Cloning repository ${GIT_OWNER}/${GIT_REPO}..."
+    git clone --branch "$GIT_BRANCH" --depth 1 "$clone_url" "$tmp_dir/repo"
+
+    local kustomization_file="${tmp_dir}/repo/${CLUSTER_PATH}/flux-system/kustomization.yaml"
+    if [[ ! -f "$kustomization_file" ]]; then
+        echo "Error: Could not find ${CLUSTER_PATH}/flux-system/kustomization.yaml in the repository."
+        exit 1
+    fi
+
+    # Append the patches to the end of the kustomization.yaml
+    cat >> "$kustomization_file" <<'EOF'
+patches:
+- target:
+    kind: Deployment
+    name: kustomize-controller
+  patch: |
+    - op: add
+      path: /spec/template/spec/containers/0/args/-
+      value: --requeue-dependency=5s
+    - op: add
+      path: /spec/template/spec/containers/0/args/-
+      value: --feature-gates=StrictPostBuildSubstitutions=true
+- patch: |
+    - op: remove
+      path: /metadata/labels/pod-security.kubernetes.io~1warn
+    - op: remove
+      path: /metadata/labels/pod-security.kubernetes.io~1warn-version
+    - op: add
+      path: /metadata/labels/pod-security.kubernetes.io~1enforce
+      value: restricted
+  target:
+    kind: Namespace
+    labelSelector: app.kubernetes.io/part-of=flux
+EOF
+
+    echo "Patches appended to ${CLUSTER_PATH}/flux-system/kustomization.yaml"
+
+    # Derive the cluster name from CLUSTER_PATH (format: clusters/CLUSTER_NAME)
+    local cluster_name
+    cluster_name=$(basename "$CLUSTER_PATH")
+
+    # Calculate the load balancer IP on the minikube subnet (.100)
+    local minikube_ip subnet lb_ip
+    minikube_ip=$(minikube ip)
+    subnet=$(echo "$minikube_ip" | cut -d'.' -f1-3)
+    lb_ip="${subnet}.100"
+
+    # Create the cluster overlay folder and files
+    local overlay_dir="${tmp_dir}/repo/apps/overlays/${cluster_name}"
+    echo
+    echo "Creating cluster overlay at apps/overlays/${cluster_name}..."
+    mkdir -p "$overlay_dir"
+
+    cat > "$overlay_dir/cluster-config.yaml" <<'EOF'
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: config
+  namespace: metallb-system
+data:
+  config: |
+    address-pools:
+    - name: default
+      protocol: layer2
+      addresses:
+      - 192.168.49.100-192.168.49.110
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    cert-manager.io/cluster-issuer: internal-issuer
+    k8s.apisix.apache.org/plugin-config-name: registry-plugin-config
+  name: registry-ingress
+  namespace: kube-system
+spec:
+  ingressClassName: local-apisix
+  tls:
+    - hosts:
+        - registry.minikube.test
+      secretName: registry-tls
+  rules:
+    - host: registry.minikube.test
+      http:
+        paths:
+          - backend:
+              service:
+                name: registry
+                port:
+                  number: 80
+            path: /
+            pathType: Prefix
+---
+apiVersion: crd.projectcalico.org/v1
+kind: GlobalNetworkPolicy
+metadata:
+  name: default-deny
+spec:
+  namespaceSelector: has(kubernetes.io/metadata.name) && kubernetes.io/metadata.name not in {"kube-system"}
+  types:
+    - Ingress
+    - Egress
+  egress:
+    - action: Allow
+EOF
+
+    cat > "$overlay_dir/kustomization.yaml" <<EOF
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - cluster-config.yaml
+  - ../../base/leptostack
+
+patches:
+  - target:
+      kind: Kustomization
+      name: apisix
+    patch: |-
+      - op: add
+        path: /spec/patches
+        value:
+          - target:
+              kind: HelmRelease
+              name: apisix
+            patch: |-
+              - op: add
+                path: /spec/values/service
+                value:
+                  type: LoadBalancer
+                  loadBalancerIP: ${lb_ip}
+EOF
+
+    echo "Cluster overlay files created at apps/overlays/${cluster_name}"
+
+    # Create the kustomization.yaml in CLUSTER_PATH referencing the overlay
+    local cluster_kustomization_file="${tmp_dir}/repo/${CLUSTER_PATH}/kustomization.yaml"
+    echo
+    echo "Creating ${CLUSTER_PATH}/kustomization.yaml..."
+    cat > "$cluster_kustomization_file" <<EOF
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+    - ../../apps/overlays/${cluster_name}
+EOF
+
+    echo "kustomization.yaml created at ${CLUSTER_PATH}/kustomization.yaml"
+
+    # Commit and push the changes
+    cd "$tmp_dir/repo"
+    git config user.name "LeptoStack Bootstrap"
+    git config user.email "bootstrap@leptostack.local"
+    git add "${CLUSTER_PATH}/flux-system/kustomization.yaml" "${CLUSTER_PATH}/kustomization.yaml" "apps/overlays/${cluster_name}"
+    if git diff --cached --quiet; then
+        echo "No changes to commit; repository already patched."
+    else
+        git commit -m "Patch flux-system kustomization and add cluster overlays for ${cluster_name}"
+        echo "Pushing changes to ${GIT_BRANCH}..."
+        git push origin "$GIT_BRANCH"
+        echo "Changes pushed successfully."
+    fi
+
+    echo "Reconciling flux"
+    flux reconcile kustomization flux-system
+
+    # Clear the trap and clean up the temporary directory
+    trap - EXIT
+    rm -rf "$tmp_dir"
+}
+
+
+
 # --- Start ---
 
 do_start() {
+
     load_config
 
     echo "=== Starting LeptoStack Development Environment ==="
@@ -496,7 +695,11 @@ do_start() {
         echo "Flux bootstrap has been started."
         echo "You can check the status of the deployment by running:"
         echo "  flux get kustomizations"
+
+        # Patch the flux-system kustomization.yaml in the git repository
+        patch_flux_system_kustomization
     fi
+
 
     # Create leptostack-base secret in flux-system namespace
     echo
