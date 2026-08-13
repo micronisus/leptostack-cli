@@ -443,8 +443,11 @@ patch_flux_system_kustomization() {
         exit 1
     fi
 
-    # Append the patches to the end of the kustomization.yaml
-    cat >> "$kustomization_file" <<'EOF'
+    # Append the patches to the end of the kustomization.yaml only if they don't already exist
+    if grep -q -- '--requeue-dependency=5s' "$kustomization_file"; then
+        echo "Patches already present in ${CLUSTER_PATH}/flux-system/kustomization.yaml, skipping."
+    else
+        cat >> "$kustomization_file" <<'EOF'
 patches:
 - target:
     kind: Deployment
@@ -469,7 +472,9 @@ patches:
     labelSelector: app.kubernetes.io/part-of=flux
 EOF
 
-    echo "Patches appended to ${CLUSTER_PATH}/flux-system/kustomization.yaml"
+        echo "Patches appended to ${CLUSTER_PATH}/flux-system/kustomization.yaml"
+    fi
+
 
     # Derive the cluster name from CLUSTER_PATH (format: clusters/CLUSTER_NAME)
     local cluster_name
@@ -482,12 +487,13 @@ EOF
     lb_ip="${subnet}.100"
 
     # Create the cluster overlay folder and files
-    local overlay_dir="${tmp_dir}/repo/apps/overlays/${cluster_name}"
+    local infra_dir="${tmp_dir}/repo/infrastructure"
+    local overlay_dir="${tmp_dir}/repo/apps/leptostack/overlays/${cluster_name}"
     echo
-    echo "Creating cluster overlay at apps/overlays/${cluster_name}..."
+    echo "Creating cluster overlay at apps/leptostack/overlays/${cluster_name}..."
     mkdir -p "$overlay_dir"
 
-    cat > "$overlay_dir/cluster-config.yaml" <<'EOF'
+    cat > "$infra_dir/cluster-config.yaml" <<'EOF'
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -541,13 +547,29 @@ spec:
     - action: Allow
 EOF
 
+    cat > "$overlay_dir/naming-conf.yaml" <<EOF
+nameReference:
+  - kind: ConfigMap
+    fieldSpecs:
+      - kind: Kustomization
+        path: spec/postBuild/substituteFrom/name
+  - kind: Kustomization
+    fieldSpecs:
+      - kind: Kustomization
+        path: spec/dependsOn/name
+EOF
+
     cat > "$overlay_dir/kustomization.yaml" <<EOF
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+namePrefix: ${cluster_name}-
+
+configurations:
+  - naming-conf.yaml
+
 resources:
-  - cluster-config.yaml
-  - ../../base/leptostack
+  - ../../base
 
 patches:
   - target:
@@ -568,7 +590,7 @@ patches:
                   loadBalancerIP: ${lb_ip}
 EOF
 
-    echo "Cluster overlay files created at apps/overlays/${cluster_name}"
+    echo "Cluster overlay files created at apps/leptostack/overlays/${cluster_name}"
 
     # Create the kustomization.yaml in CLUSTER_PATH referencing the overlay
     local cluster_kustomization_file="${tmp_dir}/repo/${CLUSTER_PATH}/kustomization.yaml"
@@ -579,7 +601,8 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
-    - ../../apps/overlays/${cluster_name}
+    - ../../infrastructure
+    - ../../apps/leptostack/overlays/${cluster_name}
 EOF
 
     echo "kustomization.yaml created at ${CLUSTER_PATH}/kustomization.yaml"
@@ -588,7 +611,7 @@ EOF
     cd "$tmp_dir/repo"
     git config user.name "LeptoStack Bootstrap"
     git config user.email "bootstrap@leptostack.local"
-    git add "${CLUSTER_PATH}/flux-system/kustomization.yaml" "${CLUSTER_PATH}/kustomization.yaml" "apps/overlays/${cluster_name}"
+    git add "${CLUSTER_PATH}/flux-system/kustomization.yaml" "${CLUSTER_PATH}/kustomization.yaml" "apps/leptostack/overlays/${cluster_name}"
     if git diff --cached --quiet; then
         echo "No changes to commit; repository already patched."
     else
