@@ -262,8 +262,8 @@ do_configure() {
     GIT_BRANCH="${GIT_BRANCH:-main}"
 
     # Ask for cluster path
-    read -rp "Enter the path to the cluster within the repo [clusters/leptostack]: " CLUSTER_PATH
-    CLUSTER_PATH="${CLUSTER_PATH:-clusters/leptostack}"
+    read -rp "Enter the path to the cluster within the repo [clusters/local]: " CLUSTER_PATH
+    CLUSTER_PATH="${CLUSTER_PATH:-clusters/local}"
 
     # Ask for Git server type
     echo
@@ -547,6 +547,18 @@ spec:
     - action: Allow
 EOF
 
+    local infra_kustomization_file="${infra_dir}/kustomization.yaml"
+    if [[ ! -f "$infra_kustomization_file" ]]; then
+        echo "Error: Could not find infrastructure/kustomization.yaml in the repository."
+        exit 1
+    fi
+    if grep -q -- 'cluster-config.yaml' "$infra_kustomization_file"; then
+        echo "  cluster-config.yaml already referenced in infrastructure/kustomization.yaml."
+    else
+        echo "  Adding cluster-config.yaml to infrastructure/kustomization.yaml resources..."
+        sed -i '/^resources:/a\  - cluster-config.yaml' "$infra_kustomization_file"
+    fi
+
     cat > "$overlay_dir/naming-conf.yaml" <<EOF
 nameReference:
   - kind: ConfigMap
@@ -601,8 +613,31 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
+    - flux-system
     - ../../infrastructure
     - ../../apps/leptostack/overlays/${cluster_name}
+
+patches:
+  - target:
+      kind: Kustomization
+      name: keycloak-crd
+      namespace: flux-system
+    patch: |-
+      - op: add
+        path: "/spec/patches"
+        value:
+          - target:
+              group: rbac.authorization.k8s.io
+              version: v1
+              kind: ClusterRoleBinding
+              name: keycloak-operator-clusterrole-binding
+            patch: |
+              - op: add
+                path: "/subjects"
+                value:
+                  - kind: ServiceAccount
+                    name: keycloak-operator
+                    namespace: ${cluster_name}-keycloak
 EOF
 
     echo "kustomization.yaml created at ${CLUSTER_PATH}/kustomization.yaml"
@@ -611,7 +646,7 @@ EOF
     cd "$tmp_dir/repo"
     git config user.name "LeptoStack Bootstrap"
     git config user.email "bootstrap@leptostack.local"
-    git add "${CLUSTER_PATH}/flux-system/kustomization.yaml" "${CLUSTER_PATH}/kustomization.yaml" "apps/leptostack/overlays/${cluster_name}"
+    git add "${CLUSTER_PATH}/flux-system/kustomization.yaml" "${CLUSTER_PATH}/kustomization.yaml" "apps/leptostack/overlays/${cluster_name}" "infrastructure/cluster-config.yaml" "infrastructure/kustomization.yaml"
     if git diff --cached --quiet; then
         echo "No changes to commit; repository already patched."
     else
