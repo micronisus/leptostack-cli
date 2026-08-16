@@ -7,6 +7,7 @@ CONFIG_FILE="${CONFIG_DIR}/config"
 
 MINIKUBE_MIN_VERSION="1.38.1"
 FLUX_MIN_VERSION="2.8.7"
+SCRIPT_VERSION="dev"
 
 # --- Utility Functions ---
 
@@ -1058,7 +1059,7 @@ _leptostack() {
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-    commands="configure start stop status reset reconcile events update-dns add-trust port-forward completion"
+    commands="configure start stop status reset reconcile events update-dns add-trust port-forward completion version"
     port_forward_services="openbao rabbitmq postgres greenmail"
 
     if [[ ${COMP_CWORD} -eq 1 ]]; then
@@ -1098,6 +1099,7 @@ _leptostack() {
         'add-trust:Add the internal CA certificate to system trust store'
         'port-forward:Port-forward a service'
         'completion:Generate shell completion script'
+        'version:Show the leptostack version'
     )
 
     _arguments -C \
@@ -1140,10 +1142,16 @@ ZSH_COMPLETION
     esac
 }
 
+# --- Version ---
+
+do_version() {
+    echo "leptostack ${SCRIPT_VERSION}"
+}
+
 # --- Main ---
 
 usage() {
-    echo "Usage: $0 {configure|start|stop|status|reset|reconcile|events|update-dns|add-trust|port-forward}"
+    echo "Usage: $0 {configure|start|stop|status|reset|reconcile|events|update-dns|add-trust|port-forward|completion|version}"
     echo
     echo "Commands:"
     echo "  configure      Set up the development environment configuration"
@@ -1157,6 +1165,7 @@ usage() {
     echo "  add-trust      Add the internal CA certificate to system trust store"
     echo "  port-forward   Port-forward a service (openbao, rabbitmq, postgres, greenmail)"
     echo "  completion     Generate shell completion script (zsh, bash)"
+    echo "  version        Show the leptostack version"
     exit 1
 }
 
@@ -1188,5 +1197,6 @@ case "$1" in
         fi
         do_completion "$2"
         ;;
+    version)       do_version ;;
     *)             usage ;;
 esac

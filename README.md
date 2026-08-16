@@ -4,7 +4,17 @@ A CLI tool for managing the LeptoStack local development environment. It provisi
 
 ## Installation
 
-Clone the repository and install the script:
+Install the latest release:
+
+```bash
+curl -fsSL -o leptostack.sh https://github.com/micronisus/leptostack-cli/releases/latest/download/leptostack.sh
+curl -fsSL -o leptostack.sh.sha256 https://github.com/micronisus/leptostack-cli/releases/latest/download/leptostack.sh.sha256
+sha256sum -c leptostack.sh.sha256
+chmod +x leptostack.sh
+sudo mv leptostack.sh /usr/local/bin/leptostack
+```
+
+Alternatively, clone the repository and install the script from source:
 
 ```bash
 git clone https://github.com/micronisus/leptostack-cli.git
@@ -35,6 +45,10 @@ sudo ln -sf "$(pwd)/leptostack.sh" /usr/local/bin/leptostack
 
 ```bash
 leptostack <command>
+```
+
+```bash
+leptostack version
 ```
 
 ## Quick Start
@@ -135,6 +149,15 @@ Creates a port-forward to a cluster service. Supported services:
 
 ```bash
 leptostack port-forward openbao
+```
+
+### `version`
+
+Prints the installed leptostack version:
+
+```bash
+leptostack version
+# leptostack 0.1.0
 ```
 
 ## Configuration
