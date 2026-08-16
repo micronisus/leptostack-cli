@@ -14,6 +14,7 @@ SCRIPT_VERSION="dev"
 detect_distro() {
     local distro=""
     if [[ -f /etc/os-release ]]; then
+        # shellcheck source=/etc/os-release
         source /etc/os-release
         case "$ID" in
             fedora) distro="fedora" ;;
@@ -50,6 +51,7 @@ load_config() {
         echo "Error: Configuration not found. Please run '$0 configure' first."
         exit 1
     fi
+    # shellcheck source=/dev/null
     source "$CONFIG_FILE"
 }
 
