@@ -95,8 +95,10 @@ Configuration is saved to `~/.config/leptostack/config`.
 Starts the development environment:
 
 1. Starts minikube
-2. Enables addons: `ingress`, `ingress-dns`, `registry`, `metrics-server`
-3. Runs `flux bootstrap` against the configured Git repository to set up GitOps
+2. Enables addons: `metallb`, `registry`, `metrics-server`
+3. If the Git repository is blank, populates it from the cluster template
+   (see `TEMPLATE_GIT_URL`) before bootstrapping
+4. Runs `flux bootstrap` against the configured Git repository to set up GitOps
 
 ### `stop`
 
@@ -112,7 +114,8 @@ Displays the current state of:
 
 ### `reset`
 
-Deletes the minikube cluster and re-runs the `start` workflow. Prompts for confirmation before proceeding.
+Deletes the minikube cluster, wipes the Git repository, re-populates it with the latest
+cluster template, and re-runs the `start` workflow. Prompts for confirmation before proceeding.
 
 ### `reconcile`
 
@@ -175,3 +178,5 @@ All configuration is stored at `~/.config/leptostack/config` (mode `600`). It in
 | `CLUSTER_PATH` | Path within the repo to the cluster manifests |
 | `MINIKUBE_CPUS` | Number of CPUs allocated to minikube |
 | `MINIKUBE_MEMORY` | Memory in MB allocated to minikube |
+| `TEMPLATE_GIT_URL` | Git repository used as the cluster template (default: `https://github.com/leptostack-fluxcd/cluster-template.git`) |
+| `TEMPLATE_GIT_BRANCH` | Branch of the cluster template to sync from (default: `main`) |

@@ -9,6 +9,12 @@ MINIKUBE_MIN_VERSION="1.38.1"
 FLUX_MIN_VERSION="2.8.7"
 SCRIPT_VERSION="dev"
 
+RELEASES_URL="https://github.com/micronisus/leptostack-cli/releases"
+VERSION_FILE="${CONFIG_DIR}/latest_version"
+
+TEMPLATE_GIT_URL_DEFAULT="https://github.com/leptostack-fluxcd/cluster-template.git"
+TEMPLATE_GIT_BRANCH_DEFAULT="main"
+
 # --- Utility Functions ---
 
 detect_distro() {
@@ -46,6 +52,179 @@ version_ge() {
     printf '%s\n%s\n' "$2" "$1" | sort -V -C
 }
 
+# --- Cluster Template Sync ---
+
+build_clone_url() {
+    local owner="$1" repo="$2"
+    echo "https://oauth2:${GIT_PAT}@${GIT_HOSTNAME}/${owner}/${repo}.git"
+}
+
+build_template_clone_url() {
+    local url="${TEMPLATE_GIT_URL:-$TEMPLATE_GIT_URL_DEFAULT}"
+    url="${url#https://}"
+    url="${url#http://}"
+    echo "https://oauth2:${RESOURCES_GIT_PAT}@${url}"
+}
+
+# Configures git identity, stages all changes, and commits + pushes them to the
+# origin repository. Usage: commit_and_push <message> <no_changes_message> [push_args...]
+# When push_args are omitted, pushes $GIT_BRANCH; otherwise they are passed to
+# `git push origin` verbatim (e.g. "-u HEAD:<branch>" when creating a new branch).
+commit_and_push() {
+    local message="$1" no_changes_message="$2"
+    shift 2
+
+    git config user.name "LeptoStack Bootstrap"
+    git config user.email "bootstrap@leptostack.local"
+    git add -A
+
+    if git diff --cached --quiet; then
+        echo "$no_changes_message"
+        return 0
+    fi
+
+    git commit -m "$message"
+    if [[ $# -gt 0 ]]; then
+        echo "Pushing changes..."
+        git push origin "$@"
+    else
+        echo "Pushing changes to ${GIT_BRANCH}..."
+        git push origin "$GIT_BRANCH"
+    fi
+    echo "Changes pushed successfully."
+}
+
+sync_cluster_template() {
+    local force="${1:-}"
+    TEMPLATE_GIT_URL="${TEMPLATE_GIT_URL:-$TEMPLATE_GIT_URL_DEFAULT}"
+    TEMPLATE_GIT_BRANCH="${TEMPLATE_GIT_BRANCH:-$TEMPLATE_GIT_BRANCH_DEFAULT}"
+
+    local repo_clone_url
+    repo_clone_url=$(build_clone_url "$GIT_OWNER" "$GIT_REPO")
+
+    # Skip when the branch already exists, unless forced (reset). Checking the
+    # branch (not HEAD) also covers repos whose default branch differs from
+    # GIT_BRANCH, where HEAD can dangle while the branch has content.
+    local refs
+    refs=$(git ls-remote "$repo_clone_url" "refs/heads/$GIT_BRANCH" 2>/dev/null) || true
+    if [[ -z "$force" && -n "$refs" ]]; then
+        echo "Repository ${GIT_OWNER}/${GIT_REPO} already contains content; skipping cluster template sync."
+        return 0
+    fi
+
+    local tmp_dir orig_dir
+    tmp_dir=$(mktemp -d /tmp/leptostack-template-XXXXXX)
+    orig_dir=$(pwd)
+    trap 'rm -rf "$tmp_dir"' EXIT
+
+    echo "Cloning cluster template ${TEMPLATE_GIT_URL}..."
+    git clone --branch "$TEMPLATE_GIT_BRANCH" --depth 1 "$(build_template_clone_url)" "$tmp_dir/template"
+    # The template is only read locally; drop the origin so the PAT never
+    # persists in the cloned repository's remote configuration.
+    git -C "$tmp_dir/template" remote remove origin
+
+    echo "Cloning repository ${GIT_OWNER}/${GIT_REPO}..."
+    if [[ -n "$refs" ]]; then
+        git clone --branch "$GIT_BRANCH" --depth 1 "$repo_clone_url" "$tmp_dir/repo"
+    else
+        git clone "$repo_clone_url" "$tmp_dir/repo"
+    fi
+
+    cd "$tmp_dir/repo"
+
+    if [[ -z "$refs" ]]; then
+        git checkout -B "$GIT_BRANCH"
+    fi
+
+    echo "Replacing repository contents with the cluster template..."
+    find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
+    tar -C "$tmp_dir/template" --exclude='.git' -cf - . | tar -C "$tmp_dir/repo" -xf -
+
+    if [[ -n "$refs" ]]; then
+        commit_and_push "Sync cluster template from ${TEMPLATE_GIT_URL}" \
+            "Repository is already in sync with the cluster template; no changes to push."
+    else
+        commit_and_push "Sync cluster template from ${TEMPLATE_GIT_URL}" \
+            "Repository is already in sync with the cluster template; no changes to push." \
+            "-u" "HEAD:${GIT_BRANCH}"
+    fi
+
+    # Restore the original working directory before removing the temp directory;
+    # otherwise the shell is left inside a deleted directory and any subsequent
+    # command that calls getcwd() (e.g. flux bootstrap) fails.
+    cd "$orig_dir"
+    trap - EXIT
+    rm -rf "$tmp_dir"
+}
+
+# --- Update Check ---
+
+download_latest_version() {
+    # Fetches the latest release version from GitHub and stores it locally.
+    mkdir -p "$CONFIG_DIR"
+    local latest
+    latest=$(curl -sL --fail "https://api.github.com/repos/micronisus/leptostack-cli/releases/latest" \
+        | grep -oP '"tag_name":\s*"\K[^"]+' | head -n1)
+    if [[ -z "$latest" ]]; then
+        echo "Warning: Could not fetch the latest version from GitHub."
+        return 1
+    fi
+    printf '%s\n' "$latest" > "$VERSION_FILE"
+    printf '%s\n' "$latest"
+}
+
+# Returns 0 if up to date, 1 if an update is available, 2 if the version is unknown.
+check_for_updates() {
+    # Pass "true" to force re-downloading the version file when it already exists.
+    local refresh="${1:-false}"
+    local latest=""
+
+    if [[ "$refresh" == "true" ]] || [[ ! -f "$VERSION_FILE" ]]; then
+        echo "Checking for the latest version..."
+        latest=$(download_latest_version) || true
+    fi
+    if [[ -z "$latest" && -f "$VERSION_FILE" ]]; then
+        latest=$(cat "$VERSION_FILE")
+    fi
+
+    if [[ -z "$latest" ]]; then
+        echo "Warning: Could not determine the latest version of leptostack."
+        return 2
+    fi
+
+    # Normalize leading "v" prefixes before comparison.
+    latest="${latest#v}"
+
+    if [[ "$SCRIPT_VERSION" == "dev" ]]; then
+        # Development builds are always considered current.
+        return 0
+    fi
+    if version_ge "${SCRIPT_VERSION#v}" "$latest"; then
+        return 0
+    fi
+
+    echo
+    echo "Warning: A newer version of leptostack is available."
+    echo "  Current version: ${SCRIPT_VERSION}"
+    echo "  Latest version:  v${latest}"
+    echo "  Download it from: ${RELEASES_URL}"
+    echo
+    return 1
+}
+
+enforce_update() {
+    # Re-checks the latest version and blocks commands that require an up-to-date CLI.
+    # The `|| status=$?` suppresses errexit so a return of 2 (version unknown) is
+    # not fatal and a return of 1 can print the blocking message before exiting.
+    local status=0
+    check_for_updates "true" || status=$?
+    if [[ "$status" -eq 1 ]]; then
+        echo "Error: You must update leptostack before running this command."
+        echo "Update leptostack from: ${RELEASES_URL}"
+        exit 1
+    fi
+}
+
 load_config() {
     if [[ ! -f "$CONFIG_FILE" ]]; then
         echo "Error: Configuration not found. Please run '$0 configure' first."
@@ -57,6 +236,8 @@ load_config() {
 
 save_config() {
     mkdir -p "$CONFIG_DIR"
+    TEMPLATE_GIT_URL="${TEMPLATE_GIT_URL:-$TEMPLATE_GIT_URL_DEFAULT}"
+    TEMPLATE_GIT_BRANCH="${TEMPLATE_GIT_BRANCH:-$TEMPLATE_GIT_BRANCH_DEFAULT}"
     cat > "$CONFIG_FILE" <<EOF
 GIT_SERVER="${GIT_SERVER}"
 GIT_PAT="${GIT_PAT}"
@@ -67,8 +248,9 @@ GIT_BRANCH="${GIT_BRANCH}"
 CLUSTER_PATH="${CLUSTER_PATH}"
 MINIKUBE_CPUS="${MINIKUBE_CPUS}"
 MINIKUBE_MEMORY="${MINIKUBE_MEMORY}"
-RESOURCES_GIT_PATH="${RESOURCES_GIT_PATH}"
 RESOURCES_GIT_PAT="${RESOURCES_GIT_PAT}"
+TEMPLATE_GIT_URL="${TEMPLATE_GIT_URL}"
+TEMPLATE_GIT_BRANCH="${TEMPLATE_GIT_BRANCH}"
 EOF
     chmod 600 "$CONFIG_FILE"
 }
@@ -307,15 +489,6 @@ do_configure() {
     echo
     echo
 
-    # Ask for LeptoStack Resources Git Repository
-    echo
-    read -rp "Enter the LeptoStack Resources Git Repository Path (e.g. owner/repo): " RESOURCES_GIT_PATH
-    if [[ -z "$RESOURCES_GIT_PATH" ]]; then
-        echo "Error: LeptoStack Resources Git Repository Path cannot be empty."
-        exit 1
-    fi
-    echo
-
     # Ask for LeptoStack Resources Git Repository PAT
     echo -n "Enter the LeptoStack Resources Git Repository PAT: "
     RESOURCES_GIT_PAT=""
@@ -419,23 +592,14 @@ patch_flux_system_kustomization() {
     echo
     echo "Patching flux-system kustomization.yaml..."
 
-    local tmp_dir
+    local tmp_dir orig_dir
     tmp_dir=$(mktemp -d /tmp/leptostack-flux-patch-XXXXXX)
+    orig_dir=$(pwd)
     trap 'rm -rf "$tmp_dir"' EXIT
 
     # Build the clone URL with the PAT embedded for authentication
     local clone_url
-    case "$GIT_SERVER" in
-        github)
-            clone_url="https://${GIT_PAT}@github.com/${GIT_OWNER}/${GIT_REPO}.git"
-            ;;
-        gitea)
-            clone_url="https://${GIT_PAT}@${GIT_HOSTNAME}/${GIT_OWNER}/${GIT_REPO}.git"
-            ;;
-        gitlab)
-            clone_url="https://oauth2:${GIT_PAT}@${GIT_HOSTNAME}/${GIT_OWNER}/${GIT_REPO}.git"
-            ;;
-    esac
+    clone_url=$(build_clone_url "$GIT_OWNER" "$GIT_REPO")
 
     echo "Cloning repository ${GIT_OWNER}/${GIT_REPO}..."
     git clone --branch "$GIT_BRANCH" --depth 1 "$clone_url" "$tmp_dir/repo"
@@ -641,28 +805,42 @@ patches:
                   - kind: ServiceAccount
                     name: keycloak-operator
                     namespace: ${cluster_name}-keycloak
+  - target:
+      kind: Kustomization
+      name: infra-config
+      namespace: flux-system
+    patch: |-
+      - op: add
+        path: "/spec/patches"
+        value:
+          - target:
+              group: trust.cert-manager.io
+              version: v1alpha1
+              kind: Bundle
+              name: internal-ca-bundle
+            patch: |
+              - op: add
+                path: "/spec/target/namespaceSelector"
+                value:
+                  matchExpressions:
+                    - key: app.kubernetes.io/part-of
+                      operator: In
+                      values:
+                        - leptostack-${cluster_name}
 EOF
 
     echo "kustomization.yaml created at ${CLUSTER_PATH}/kustomization.yaml"
 
     # Commit and push the changes
     cd "$tmp_dir/repo"
-    git config user.name "LeptoStack Bootstrap"
-    git config user.email "bootstrap@leptostack.local"
-    git add "${CLUSTER_PATH}/flux-system/kustomization.yaml" "${CLUSTER_PATH}/kustomization.yaml" "apps/leptostack/overlays/${cluster_name}" "infrastructure/cluster-config.yaml" "infrastructure/kustomization.yaml"
-    if git diff --cached --quiet; then
-        echo "No changes to commit; repository already patched."
-    else
-        git commit -m "Patch flux-system kustomization and add cluster overlays for ${cluster_name}"
-        echo "Pushing changes to ${GIT_BRANCH}..."
-        git push origin "$GIT_BRANCH"
-        echo "Changes pushed successfully."
-    fi
+    commit_and_push "Patch flux-system kustomization and add cluster overlays for ${cluster_name}" \
+        "No changes to commit; repository already patched."
 
     echo "Reconciling flux"
     flux reconcile kustomization flux-system
 
-    # Clear the trap and clean up the temporary directory
+    # Restore the original working directory before removing the temp directory.
+    cd "$orig_dir"
     trap - EXIT
     rm -rf "$tmp_dir"
 }
@@ -672,6 +850,7 @@ EOF
 # --- Start ---
 
 do_start() {
+    local resync="${1:-}"
 
     load_config
 
@@ -704,6 +883,9 @@ do_start() {
         echo "You can check the status of the deployment by running:"
         echo "  flux get kustomizations"
     else
+        # Sync the cluster template into the repository before bootstrapping
+        sync_cluster_template "$resync"
+
         # Export PAT based on git server
         case "$GIT_SERVER" in
             github)
@@ -826,7 +1008,7 @@ do_reset() {
     minikube delete
     echo
 
-    do_start
+    do_start resync
 }
 
 # --- Reconcile ---
@@ -1174,6 +1356,15 @@ usage() {
 if [[ $# -lt 1 ]]; then
     usage
 fi
+
+case "$1" in
+    configure|start|reset)
+        enforce_update
+        ;;
+    *)
+        check_for_updates "false" || true
+        ;;
+esac
 
 case "$1" in
     configure)     do_configure ;;
