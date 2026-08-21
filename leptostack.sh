@@ -66,10 +66,6 @@ build_template_clone_url() {
     echo "https://oauth2:${RESOURCES_GIT_PAT}@${url}"
 }
 
-# Configures git identity, stages all changes, and commits + pushes them to the
-# origin repository. Usage: commit_and_push <message> <no_changes_message> [push_args...]
-# When push_args are omitted, pushes $GIT_BRANCH; otherwise they are passed to
-# `git push origin` verbatim (e.g. "-u HEAD:<branch>" when creating a new branch).
 commit_and_push() {
     local message="$1" no_changes_message="$2"
     shift 2
@@ -92,6 +88,128 @@ commit_and_push() {
         git push origin "$GIT_BRANCH"
     fi
     echo "Changes pushed successfully."
+}
+
+generate_cluster_config() {
+    local repo_dir="$1" cluster_name="$2"
+    local infra_dir="${repo_dir}/infrastructure"
+    local cluster_config_file="${infra_dir}/cluster-config.yaml"
+    local infra_kustomization_file="${infra_dir}/kustomization.yaml"
+    local overlay_dir="${repo_dir}/apps/leptostack/overlays/${cluster_name}"
+
+    if [[ ! -f "$infra_kustomization_file" ]]; then
+        echo "Error: Could not find infrastructure/kustomization.yaml in the repository."
+        exit 1
+    fi
+
+    echo "Creating infrastructure/cluster-config.yaml..."
+    cat > "$cluster_config_file" <<'EOF'
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: config
+  namespace: metallb-system
+data:
+  config: |
+    address-pools:
+    - name: default
+      protocol: layer2
+      addresses:
+      - 192.168.49.100-192.168.49.110
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    cert-manager.io/cluster-issuer: internal-issuer
+    k8s.apisix.apache.org/plugin-config-name: registry-plugin-config
+  name: registry-ingress
+  namespace: kube-system
+spec:
+  ingressClassName: local-apisix
+  tls:
+    - hosts:
+        - registry.minikube.test
+      secretName: registry-tls
+  rules:
+    - host: registry.minikube.test
+      http:
+        paths:
+          - backend:
+              service:
+                name: registry
+                port:
+                  number: 80
+            path: /
+            pathType: Prefix
+---
+apiVersion: crd.projectcalico.org/v1
+kind: GlobalNetworkPolicy
+metadata:
+  name: default-deny
+spec:
+  namespaceSelector: has(kubernetes.io/metadata.name) && kubernetes.io/metadata.name not in {"kube-system"}
+  types:
+    - Ingress
+    - Egress
+  egress:
+    - action: Allow
+EOF
+
+    if grep -q -- 'cluster-config.yaml' "$infra_kustomization_file"; then
+        echo "  cluster-config.yaml already referenced in infrastructure/kustomization.yaml."
+    else
+        echo "  Adding cluster-config.yaml to infrastructure/kustomization.yaml resources..."
+        sed -i '/^resources:/a\  - cluster-config.yaml' "$infra_kustomization_file"
+    fi
+
+    # Calculate the load balancer IP on the minikube subnet (.100)
+    local minikube_ip subnet lb_ip
+    minikube_ip=$(minikube ip)
+    subnet=$(echo "$minikube_ip" | cut -d'.' -f1-3)
+    lb_ip="${subnet}.100"
+
+    # Reuse the example overlay from the cluster template for the local overlay so
+    # template changes don't require updating this script. Only the namePrefix and
+    # the environment-specific apisix LoadBalancerIP are adjusted.
+    local example_overlay_dir="${repo_dir}/apps/leptostack/overlays/example"
+    if [[ ! -f "${example_overlay_dir}/kustomization.yaml" ]]; then
+        echo "Error: Could not find apps/leptostack/overlays/example/kustomization.yaml in the cluster template."
+        exit 1
+    fi
+
+    echo "Creating cluster overlay at apps/leptostack/overlays/${cluster_name} from the template example overlay..."
+    mkdir -p "$overlay_dir"
+    cp "$example_overlay_dir/naming-conf.yaml" "$overlay_dir/naming-conf.yaml"
+    cp "$example_overlay_dir/kustomization.yaml" "$overlay_dir/kustomization.yaml"
+
+    sed -i "s/^namePrefix: .*/namePrefix: ${cluster_name}-/" "$overlay_dir/kustomization.yaml"
+
+    if ! grep -q 'loadBalancerIP' "$overlay_dir/kustomization.yaml"; then
+        cat >> "$overlay_dir/kustomization.yaml" <<EOF
+
+patches:
+  - target:
+      kind: Kustomization
+      name: apisix
+    patch: |-
+      - op: add
+        path: /spec/patches
+        value:
+          - target:
+              kind: HelmRelease
+              name: apisix
+            patch: |-
+              - op: add
+                path: /spec/values/service
+                value:
+                  type: LoadBalancer
+                  loadBalancerIP: ${lb_ip}
+EOF
+    fi
+
+    echo "Cluster overlay files created at apps/leptostack/overlays/${cluster_name}"
 }
 
 sync_cluster_template() {
@@ -140,6 +258,35 @@ sync_cluster_template() {
     find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
     tar -C "$tmp_dir/template" --exclude='.git' -cf - . | tar -C "$tmp_dir/repo" -xf -
 
+    local example_dir="${tmp_dir}/repo/clusters/example"
+    if [[ ! -d "$example_dir" ]]; then
+        echo "Error: clusters/example not found in the cluster template."
+        exit 1
+    fi
+    if [[ "$CLUSTER_PATH" == "clusters/example" ]]; then
+        echo "Error: CLUSTER_PATH cannot be clusters/example (reserved by the cluster template)."
+        exit 1
+    fi
+    rm -rf "${tmp_dir}/repo/${CLUSTER_PATH}"
+    mv "$example_dir" "${tmp_dir}/repo/${CLUSTER_PATH}"
+    echo "Copied clusters/example to ${CLUSTER_PATH}."
+
+    local cluster_name cluster_kustomization_file
+    cluster_name=$(basename "$CLUSTER_PATH")
+    cluster_kustomization_file="${tmp_dir}/repo/${CLUSTER_PATH}/kustomization.yaml"
+    if [[ ! -f "$cluster_kustomization_file" ]]; then
+        echo "Error: Could not find ${CLUSTER_PATH}/kustomization.yaml in the cluster template."
+        exit 1
+    fi
+    sed -i \
+        -e "s/example-keycloak/${cluster_name}-keycloak/g" \
+        -e "s/leptostack-example/leptostack-${cluster_name}/g" \
+        -e "s|overlays/example|overlays/${cluster_name}|g" \
+        "$cluster_kustomization_file"
+    echo "Renamed example cluster references to ${cluster_name} in ${CLUSTER_PATH}/kustomization.yaml."
+
+    generate_cluster_config "${tmp_dir}/repo" "$cluster_name"
+
     if [[ -n "$refs" ]]; then
         commit_and_push "Sync cluster template from ${TEMPLATE_GIT_URL}" \
             "Repository is already in sync with the cluster template; no changes to push."
@@ -149,9 +296,6 @@ sync_cluster_template() {
             "-u" "HEAD:${GIT_BRANCH}"
     fi
 
-    # Restore the original working directory before removing the temp directory;
-    # otherwise the shell is left inside a deleted directory and any subsequent
-    # command that calls getcwd() (e.g. flux bootstrap) fails.
     cd "$orig_dir"
     trap - EXIT
     rm -rf "$tmp_dir"
@@ -586,267 +730,6 @@ do_configure() {
     echo "  $0 start"
 }
 
-# --- Patch Flux System Kustomization ---
-
-patch_flux_system_kustomization() {
-    echo
-    echo "Patching flux-system kustomization.yaml..."
-
-    local tmp_dir orig_dir
-    tmp_dir=$(mktemp -d /tmp/leptostack-flux-patch-XXXXXX)
-    orig_dir=$(pwd)
-    trap 'rm -rf "$tmp_dir"' EXIT
-
-    # Build the clone URL with the PAT embedded for authentication
-    local clone_url
-    clone_url=$(build_clone_url "$GIT_OWNER" "$GIT_REPO")
-
-    echo "Cloning repository ${GIT_OWNER}/${GIT_REPO}..."
-    git clone --branch "$GIT_BRANCH" --depth 1 "$clone_url" "$tmp_dir/repo"
-
-    local kustomization_file="${tmp_dir}/repo/${CLUSTER_PATH}/flux-system/kustomization.yaml"
-    if [[ ! -f "$kustomization_file" ]]; then
-        echo "Error: Could not find ${CLUSTER_PATH}/flux-system/kustomization.yaml in the repository."
-        exit 1
-    fi
-
-    # Append the patches to the end of the kustomization.yaml only if they don't already exist
-    if grep -q -- '--requeue-dependency=5s' "$kustomization_file"; then
-        echo "Patches already present in ${CLUSTER_PATH}/flux-system/kustomization.yaml, skipping."
-    else
-        cat >> "$kustomization_file" <<'EOF'
-patches:
-- target:
-    kind: Deployment
-    name: kustomize-controller
-  patch: |
-    - op: add
-      path: /spec/template/spec/containers/0/args/-
-      value: --requeue-dependency=5s
-    - op: add
-      path: /spec/template/spec/containers/0/args/-
-      value: --feature-gates=StrictPostBuildSubstitutions=true
-- patch: |
-    - op: remove
-      path: /metadata/labels/pod-security.kubernetes.io~1warn
-    - op: remove
-      path: /metadata/labels/pod-security.kubernetes.io~1warn-version
-    - op: add
-      path: /metadata/labels/pod-security.kubernetes.io~1enforce
-      value: restricted
-  target:
-    kind: Namespace
-    labelSelector: app.kubernetes.io/part-of=flux
-EOF
-
-        echo "Patches appended to ${CLUSTER_PATH}/flux-system/kustomization.yaml"
-    fi
-
-
-    # Derive the cluster name from CLUSTER_PATH (format: clusters/CLUSTER_NAME)
-    local cluster_name
-    cluster_name=$(basename "$CLUSTER_PATH")
-
-    # Calculate the load balancer IP on the minikube subnet (.100)
-    local minikube_ip subnet lb_ip
-    minikube_ip=$(minikube ip)
-    subnet=$(echo "$minikube_ip" | cut -d'.' -f1-3)
-    lb_ip="${subnet}.100"
-
-    # Create the cluster overlay folder and files
-    local infra_dir="${tmp_dir}/repo/infrastructure"
-    local overlay_dir="${tmp_dir}/repo/apps/leptostack/overlays/${cluster_name}"
-    echo
-    echo "Creating cluster overlay at apps/leptostack/overlays/${cluster_name}..."
-    mkdir -p "$overlay_dir"
-
-    cat > "$infra_dir/cluster-config.yaml" <<'EOF'
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: config
-  namespace: metallb-system
-data:
-  config: |
-    address-pools:
-    - name: default
-      protocol: layer2
-      addresses:
-      - 192.168.49.100-192.168.49.110
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  annotations:
-    cert-manager.io/cluster-issuer: internal-issuer
-    k8s.apisix.apache.org/plugin-config-name: registry-plugin-config
-  name: registry-ingress
-  namespace: kube-system
-spec:
-  ingressClassName: local-apisix
-  tls:
-    - hosts:
-        - registry.minikube.test
-      secretName: registry-tls
-  rules:
-    - host: registry.minikube.test
-      http:
-        paths:
-          - backend:
-              service:
-                name: registry
-                port:
-                  number: 80
-            path: /
-            pathType: Prefix
----
-apiVersion: crd.projectcalico.org/v1
-kind: GlobalNetworkPolicy
-metadata:
-  name: default-deny
-spec:
-  namespaceSelector: has(kubernetes.io/metadata.name) && kubernetes.io/metadata.name not in {"kube-system"}
-  types:
-    - Ingress
-    - Egress
-  egress:
-    - action: Allow
-EOF
-
-    local infra_kustomization_file="${infra_dir}/kustomization.yaml"
-    if [[ ! -f "$infra_kustomization_file" ]]; then
-        echo "Error: Could not find infrastructure/kustomization.yaml in the repository."
-        exit 1
-    fi
-    if grep -q -- 'cluster-config.yaml' "$infra_kustomization_file"; then
-        echo "  cluster-config.yaml already referenced in infrastructure/kustomization.yaml."
-    else
-        echo "  Adding cluster-config.yaml to infrastructure/kustomization.yaml resources..."
-        sed -i '/^resources:/a\  - cluster-config.yaml' "$infra_kustomization_file"
-    fi
-
-    cat > "$overlay_dir/naming-conf.yaml" <<EOF
-nameReference:
-  - kind: ConfigMap
-    fieldSpecs:
-      - kind: Kustomization
-        path: spec/postBuild/substituteFrom/name
-  - kind: Kustomization
-    fieldSpecs:
-      - kind: Kustomization
-        path: spec/dependsOn/name
-EOF
-
-    cat > "$overlay_dir/kustomization.yaml" <<EOF
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-
-namePrefix: ${cluster_name}-
-
-configurations:
-  - naming-conf.yaml
-
-resources:
-  - ../../base
-
-patches:
-  - target:
-      kind: Kustomization
-      name: apisix
-    patch: |-
-      - op: add
-        path: /spec/patches
-        value:
-          - target:
-              kind: HelmRelease
-              name: apisix
-            patch: |-
-              - op: add
-                path: /spec/values/service
-                value:
-                  type: LoadBalancer
-                  loadBalancerIP: ${lb_ip}
-EOF
-
-    echo "Cluster overlay files created at apps/leptostack/overlays/${cluster_name}"
-
-    # Create the kustomization.yaml in CLUSTER_PATH referencing the overlay
-    local cluster_kustomization_file="${tmp_dir}/repo/${CLUSTER_PATH}/kustomization.yaml"
-    echo
-    echo "Creating ${CLUSTER_PATH}/kustomization.yaml..."
-    cat > "$cluster_kustomization_file" <<EOF
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-
-resources:
-    - flux-system
-    - ../../infrastructure
-    - ../../apps/leptostack/overlays/${cluster_name}
-
-patches:
-  - target:
-      kind: Kustomization
-      name: keycloak-crd
-      namespace: flux-system
-    patch: |-
-      - op: add
-        path: "/spec/patches"
-        value:
-          - target:
-              group: rbac.authorization.k8s.io
-              version: v1
-              kind: ClusterRoleBinding
-              name: keycloak-operator-clusterrole-binding
-            patch: |
-              - op: add
-                path: "/subjects"
-                value:
-                  - kind: ServiceAccount
-                    name: keycloak-operator
-                    namespace: ${cluster_name}-keycloak
-  - target:
-      kind: Kustomization
-      name: infra-config
-      namespace: flux-system
-    patch: |-
-      - op: add
-        path: "/spec/patches"
-        value:
-          - target:
-              group: trust.cert-manager.io
-              version: v1alpha1
-              kind: Bundle
-              name: internal-ca-bundle
-            patch: |
-              - op: add
-                path: "/spec/target/namespaceSelector"
-                value:
-                  matchExpressions:
-                    - key: app.kubernetes.io/part-of
-                      operator: In
-                      values:
-                        - leptostack-${cluster_name}
-EOF
-
-    echo "kustomization.yaml created at ${CLUSTER_PATH}/kustomization.yaml"
-
-    # Commit and push the changes
-    cd "$tmp_dir/repo"
-    commit_and_push "Patch flux-system kustomization and add cluster overlays for ${cluster_name}" \
-        "No changes to commit; repository already patched."
-
-    echo "Reconciling flux"
-    flux reconcile kustomization flux-system
-
-    # Restore the original working directory before removing the temp directory.
-    cd "$orig_dir"
-    trap - EXIT
-    rm -rf "$tmp_dir"
-}
-
-
-
 # --- Start ---
 
 do_start() {
@@ -938,9 +821,6 @@ do_start() {
         echo "Flux bootstrap has been started."
         echo "You can check the status of the deployment by running:"
         echo "  flux get kustomizations"
-
-        # Patch the flux-system kustomization.yaml in the git repository
-        patch_flux_system_kustomization
     fi
 
 
@@ -1017,6 +897,8 @@ do_reconcile() {
     check_kubectl_context
     echo "Reconciling flux-system..."
     flux --context minikube reconcile kustomization flux-system --with-source
+    echo "Reconciling leptostack-base source..."
+    flux --context minikube reconcile source git leptostack-base
 }
 
 # --- Events ---
