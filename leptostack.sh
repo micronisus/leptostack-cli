@@ -10,6 +10,7 @@ FLUX_MIN_VERSION="2.8.7"
 SCRIPT_VERSION="dev"
 
 RELEASES_URL="https://github.com/micronisus/leptostack-cli/releases"
+UPDATE_URL="${RELEASES_URL}/latest/download/leptostack.sh"
 VERSION_FILE="${CONFIG_DIR}/latest_version"
 
 TEMPLATE_GIT_URL_DEFAULT="https://github.com/leptostack-fluxcd/cluster-template.git"
@@ -50,6 +51,10 @@ check_kubectl_context() {
 version_ge() {
     # Returns 0 if $1 >= $2 (semver comparison)
     printf '%s\n%s\n' "$2" "$1" | sort -V -C
+}
+
+print_update_command() {
+    echo "  curl -fsSL -o /tmp/leptostack.sh ${UPDATE_URL} && chmod +x /tmp/leptostack.sh && sudo mv /tmp/leptostack.sh /usr/local/bin/leptostack"
 }
 
 # --- Cluster Template Sync ---
@@ -351,7 +356,9 @@ check_for_updates() {
     echo "Warning: A newer version of leptostack is available."
     echo "  Current version: ${SCRIPT_VERSION}"
     echo "  Latest version:  v${latest}"
-    echo "  Download it from: ${RELEASES_URL}"
+    echo
+    echo "To update, run:"
+    print_update_command
     echo
     return 1
 }
@@ -364,7 +371,11 @@ enforce_update() {
     check_for_updates "true" || status=$?
     if [[ "$status" -eq 1 ]]; then
         echo "Error: You must update leptostack before running this command."
-        echo "Update leptostack from: ${RELEASES_URL}"
+        echo
+        echo "To update, run:"
+        print_update_command
+        echo
+        echo "More information: ${RELEASES_URL}"
         exit 1
     fi
 }

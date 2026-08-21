@@ -4,15 +4,13 @@ A CLI tool for managing the LeptoStack local development environment. It provisi
 
 ## Installation
 
-Install the latest release:
+Install the latest release with a single command:
 
 ```bash
-curl -fsSL -o leptostack.sh https://github.com/micronisus/leptostack-cli/releases/latest/download/leptostack.sh
-curl -fsSL -o leptostack.sh.sha256 https://github.com/micronisus/leptostack-cli/releases/latest/download/leptostack.sh.sha256
-sha256sum -c leptostack.sh.sha256
-chmod +x leptostack.sh
-sudo mv leptostack.sh /usr/local/bin/leptostack
+curl -fsSL -o leptostack.sh https://github.com/micronisus/leptostack-cli/releases/latest/download/leptostack.sh && chmod +x leptostack.sh && sudo mv leptostack.sh /usr/local/bin/leptostack
 ```
+
+The `.sha256` checksum file is also published with each release for optional verification.
 
 Alternatively, clone the repository and install the script from source:
 
