@@ -108,7 +108,7 @@ generate_cluster_config() {
     fi
 
     echo "Creating infrastructure/cluster-config.yaml..."
-    cat > "$cluster_config_file" <<'EOF'
+    cat > "$cluster_config_file" <<EOF
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -128,7 +128,7 @@ kind: Ingress
 metadata:
   annotations:
     cert-manager.io/cluster-issuer: internal-issuer
-    k8s.apisix.apache.org/plugin-config-name: registry-plugin-config
+    k8s.apisix.apache.org/plugin-config-name: local-plugin-config
   name: registry-ingress
   namespace: kube-system
 spec:
@@ -160,6 +160,43 @@ spec:
     - Egress
   egress:
     - action: Allow
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coredns
+  namespace: kube-system
+data:
+  Corefile: |
+    .:53 {
+        log
+        errors
+        health {
+           lameduck 5s
+        }
+        ready
+        rewrite name regex ^(.*)\.api\.local\.internal\.$ apisix-internal-gateway.ingress-local-internal.svc.cluster.local answer auto
+        kubernetes cluster.local in-addr.arpa ip6.arpa {
+           pods insecure
+           fallthrough in-addr.arpa ip6.arpa
+           ttl 30
+        }
+        prometheus :9153
+        hosts {
+           $(minikube ip) host.minikube.internal
+           fallthrough
+        }
+        forward . /etc/resolv.conf {
+           max_concurrent 1000
+        }
+        cache 30 {
+           disable success cluster.local
+           disable denial cluster.local
+        }
+        loop
+        reload
+        loadbalance
+    }
 EOF
 
     if grep -q -- 'cluster-config.yaml' "$infra_kustomization_file"; then
