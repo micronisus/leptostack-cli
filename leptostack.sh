@@ -175,7 +175,7 @@ data:
            lameduck 5s
         }
         ready
-        rewrite name regex ^(.*)\.api\.local\.internal\.$ apisix-internal-gateway.ingress-local-internal.svc.cluster.local answer auto
+        rewrite name regex ^((.*)\.)?api\.local\.internal\.$ apisix-internal-gateway.ingress-local-internal.svc.cluster.local answer auto
         kubernetes cluster.local in-addr.arpa ip6.arpa {
            pods insecure
            fallthrough in-addr.arpa ip6.arpa
