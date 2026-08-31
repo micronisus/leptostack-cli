@@ -228,6 +228,12 @@ EOF
 
     sed -i "s/^namePrefix: .*/namePrefix: ${cluster_name}-/" "$overlay_dir/kustomization.yaml"
 
+    # greenmail is not enabled at base; enable it in the local cluster overlay.
+    if ! grep -q 'greenmail.yaml' "$overlay_dir/kustomization.yaml"; then
+        sed -i '/^resources:/a\  - ../../base/greenmail.yaml' "$overlay_dir/kustomization.yaml"
+        echo "  Added ../../base/greenmail.yaml to overlay kustomization resources."
+    fi
+
     if ! grep -q 'loadBalancerIP' "$overlay_dir/kustomization.yaml"; then
         cat >> "$overlay_dir/kustomization.yaml" <<EOF
 
