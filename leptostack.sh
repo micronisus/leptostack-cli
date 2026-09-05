@@ -927,6 +927,18 @@ do_stop() {
     echo "Minikube stopped."
 }
 
+# --- Restart ---
+
+do_restart() {
+    load_config
+
+    echo "Stopping minikube..."
+    minikube stop
+    echo "Minikube stopped."
+
+    do_start
+}
+
 # --- Reset ---
 
 do_reset() {
@@ -962,21 +974,32 @@ do_events() {
     kubectl --context minikube events -A -w
 }
 
+check_kustomization_ready() {
+    # Lightweight readiness gate used by commands that only need core
+    # infrastructure (e.g. add-trust, port-forward) rather than the whole
+    # cluster to be reconciled.
+    local name="$1"
+    local output
+    echo "Checking if the ${name} Kustomization is ready..."
+    if ! output=$(flux --context minikube get kustomization "$name" --status-selector ready=false --no-header 2>&1); then
+        echo "Error: The ${name} Kustomization is not available."
+        echo "  $output"
+        echo "Run '$0 status' to check progress."
+        exit 1
+    fi
+    if [[ -n "$output" ]]; then
+        echo "Error: The ${name} Kustomization is not ready."
+        echo "Run '$0 status' to check progress."
+        exit 1
+    fi
+    echo "The ${name} Kustomization is ready."
+    echo
+}
+
 # --- Update DNS ---
 
 do_update_dns() {
     check_kubectl_context
-
-    echo "Checking if all kustomizations are ready..."
-    local not_ready
-    not_ready=$(flux --context minikube get kustomizations --status-selector ready=false --no-header | wc -l)
-    if [[ "$not_ready" -gt 0 ]]; then
-        echo "Error: $not_ready kustomization(s) are not ready. Please wait for all kustomizations to become ready."
-        echo "Run '$0 status' to check progress."
-        exit 1
-    fi
-    echo "All kustomizations are ready."
-    echo
 
     # Check if NetworkManager is running with dnsmasq plugin
     local nm_uses_dnsmasq=false
@@ -1026,16 +1049,7 @@ do_update_dns() {
 do_add_trust() {
     check_kubectl_context
 
-    echo "Checking if all kustomizations are ready..."
-    local not_ready
-    not_ready=$(flux --context minikube get kustomizations --status-selector ready=false --no-header | wc -l)
-    if [[ "$not_ready" -gt 0 ]]; then
-        echo "Error: $not_ready kustomization(s) are not ready. Please wait for all kustomizations to become ready."
-        echo "Run '$0 status' to check progress."
-        exit 1
-    fi
-    echo "All kustomizations are ready."
-    echo
+    check_kustomization_ready "infra-config"
 
     # Download the CA certificate from the secret
     local tmp_ca
@@ -1071,95 +1085,118 @@ do_add_trust() {
 
 # --- Port Forward ---
 
-do_port_forward() {
+print_port_forward_credentials() {
     local service="$1"
 
     case "$service" in
         openbao)
-            check_kubectl_context
-
-            echo "Checking if all kustomizations are ready..."
-            local not_ready
-            not_ready=$(flux --context minikube get kustomizations --status-selector ready=false --no-header | wc -l)
-            if [[ "$not_ready" -gt 0 ]]; then
-                echo "Error: $not_ready kustomization(s) are not ready. Please wait for all kustomizations to become ready."
-                echo "Run '$0 status' to check progress."
-                exit 1
-            fi
-            echo "All kustomizations are ready."
-            echo
-
             echo "OpenBao root token:"
             kubectl --context minikube -n local-openbao get secrets openbao-init -o json | jq -r '.data.root_token | @base64d'
             echo
-
-            echo "Starting port-forward for OpenBao (localhost:8200)..."
-            kubectl --context minikube -n local-openbao port-forward services/local-openbao-openbao 8200:8200
             ;;
         rabbitmq)
-            check_kubectl_context
-
-            echo "Checking if all kustomizations are ready..."
-            local not_ready
-            not_ready=$(flux --context minikube get kustomizations --status-selector ready=false --no-header | wc -l)
-            if [[ "$not_ready" -gt 0 ]]; then
-                echo "Error: $not_ready kustomization(s) are not ready. Please wait for all kustomizations to become ready."
-                echo "Run '$0 status' to check progress."
-                exit 1
-            fi
-            echo "All kustomizations are ready."
-            echo
-
             echo "RabbitMQ credentials:"
             echo "  Username: $(kubectl --context minikube -n local-rabbitmq get secret portal-rabbitmq-default-user -o jsonpath='{.data.username}' | base64 -d)"
             echo "  Password: $(kubectl --context minikube -n local-rabbitmq get secret portal-rabbitmq-default-user -o jsonpath='{.data.password}' | base64 -d)"
             echo
+            ;;
+        postgres)
+            echo "PostgreSQL superuser credentials:"
+            echo "  Username: $(kubectl --context minikube -n local-pgcluster get secret local-pgcluster-superuser -o jsonpath='{.data.username}' | base64 -d)"
+            echo "  Password: $(kubectl --context minikube -n local-pgcluster get secret local-pgcluster-superuser -o jsonpath='{.data.password}' | base64 -d)"
+            echo
+            ;;
+        valkey)
+            echo "Valkey credentials:"
+            echo "  Password: $(kubectl --context minikube -n local-valkey get secret valkey-admin -o jsonpath='{.data.password}' | base64 -d)"
+            echo
+            ;;
+    esac
+}
 
+forward_service() {
+    local service="$1"
+
+    case "$service" in
+        openbao)
+            echo "Starting port-forward for OpenBao (localhost:8200)..."
+            kubectl --context minikube -n local-openbao port-forward services/local-openbao-openbao 8200:8200
+            ;;
+        rabbitmq)
             echo "Starting port-forward for RabbitMQ Management (localhost:15672)..."
             kubectl --context minikube -n local-rabbitmq port-forward services/portal-rabbitmq 15672:15672
             ;;
         postgres)
-            check_kubectl_context
-
-            echo "Checking if all kustomizations are ready..."
-            local not_ready
-            not_ready=$(flux --context minikube get kustomizations --status-selector ready=false --no-header | wc -l)
-            if [[ "$not_ready" -gt 0 ]]; then
-                echo "Error: $not_ready kustomization(s) are not ready. Please wait for all kustomizations to become ready."
-                echo "Run '$0 status' to check progress."
-                exit 1
-            fi
-            echo "All kustomizations are ready."
-            echo
-
-            echo "PostgreSQL superuser credentials:"
-            echo "  Username: $(kubectl --context minikube -n local-supabase get secret supabase-cluster-superuser -o jsonpath='{.data.username}' | base64 -d)"
-            echo "  Password: $(kubectl --context minikube -n local-supabase get secret supabase-cluster-superuser -o jsonpath='{.data.password}' | base64 -d)"
-            echo
-
             echo "Starting port-forward for PostgreSQL (localhost:5432)..."
-            kubectl --context minikube -n local-supabase port-forward services/supabase-cluster-rw 5432:5432
+            kubectl --context minikube -n local-pgcluster port-forward services/local-pgcluster-rw 5432:5432
+            ;;
+        valkey)
+            echo "Starting port-forward for Valkey (localhost:6379)..."
+            kubectl --context minikube -n local-valkey port-forward services/valkey-portal-valkey 6379:6379
+            ;;
+        flowable)
+            echo "Starting port-forward for Flowable REST (localhost:8080)..."
+            kubectl --context minikube -n local-flowable port-forward services/flowable-rest 8080:8080
             ;;
         greenmail)
-            check_kubectl_context
-
-            echo "Checking if all kustomizations are ready..."
-            local not_ready
-            not_ready=$(flux --context minikube get kustomizations --status-selector ready=false --no-header | wc -l)
-            if [[ "$not_ready" -gt 0 ]]; then
-                echo "Error: $not_ready kustomization(s) are not ready. Please wait for all kustomizations to become ready."
-                echo "Run '$0 status' to check progress."
-                exit 1
-            fi
-            echo "All kustomizations are ready."
-            echo
-
             echo "Starting port-forward for GreenMail (localhost:8025)..."
             kubectl --context minikube -n greenmail port-forward services/api 8025:80
             ;;
+    esac
+}
+
+start_all_port_forwards() {
+    local services=(openbao rabbitmq postgres valkey flowable greenmail)
+    local pids=()
+    local service interrupted=false failed=false
+
+    for service in "${services[@]}"; do
+        print_port_forward_credentials "$service"
+    done
+
+    trap 'interrupted=true; kill $(jobs -p) 2>/dev/null || true' INT TERM
+
+    for service in "${services[@]}"; do
+        forward_service "$service" &
+        pids+=("$!")
+    done
+
+    echo
+    echo "All port-forwards are running (openbao, rabbitmq, postgres, valkey, flowable, greenmail)."
+    echo "Press Ctrl+C to stop them."
+    echo
+
+    for pid in "${pids[@]}"; do
+        wait "$pid" 2>/dev/null || failed=true
+    done
+
+    trap - INT TERM
+    if [[ "$interrupted" == "true" ]]; then
+        echo "Port-forwards stopped."
+        return 130
+    fi
+    if [[ "$failed" == "true" ]]; then
+        echo "Warning: one or more port-forwards exited early. Check for port conflicts above."
+    fi
+}
+
+do_port_forward() {
+    local service="$1"
+
+    check_kubectl_context
+    check_kustomization_ready "infra-config"
+
+    case "$service" in
+        all)
+            start_all_port_forwards
+            ;;
+        openbao|rabbitmq|postgres|valkey|flowable|greenmail)
+            print_port_forward_credentials "$service"
+            forward_service "$service"
+            ;;
         *)
             echo "Error: Unknown service '$service'."
-            echo "Supported services: openbao, rabbitmq, postgres, greenmail"
+            echo "Supported services: all, openbao, rabbitmq, postgres, valkey, flowable, greenmail"
             exit 1
             ;;
     esac
@@ -1179,8 +1216,8 @@ _leptostack() {
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-    commands="configure start stop status reset reconcile events update-dns add-trust port-forward completion version"
-    port_forward_services="openbao rabbitmq postgres greenmail"
+    commands="configure start stop restart status reset reconcile events update-dns add-trust port-forward completion version"
+    port_forward_services="all openbao rabbitmq postgres valkey flowable greenmail"
 
     if [[ ${COMP_CWORD} -eq 1 ]]; then
         COMPREPLY=( $(compgen -W "${commands}" -- "${cur}") )
@@ -1211,6 +1248,7 @@ _leptostack() {
         'configure:Set up the development environment configuration'
         'start:Start LeptoStack'
         'stop:Stop LeptoStack'
+        'restart:Stop and restart LeptoStack'
         'status:Check LeptoStack status'
         'reset:Delete LeptoStack cluster and restart'
         'reconcile:Reconcile flux-system kustomization'
@@ -1234,7 +1272,7 @@ _leptostack() {
             case $words[1] in
                 port-forward)
                     local -a services
-                    services=('openbao:Port-forward OpenBao' 'rabbitmq:Port-forward RabbitMQ' 'postgres:Port-forward PostgreSQL' 'greenmail:Port-forward GreenMail')
+                    services=('openbao:Port-forward OpenBao' 'rabbitmq:Port-forward RabbitMQ' 'postgres:Port-forward PostgreSQL' 'valkey:Port-forward Valkey' 'flowable:Port-forward Flowable REST' 'greenmail:Port-forward GreenMail' 'all:Port-forward all services')
                     _describe -t services 'service' services
                     ;;
                 completion)
@@ -1271,19 +1309,20 @@ do_version() {
 # --- Main ---
 
 usage() {
-    echo "Usage: $0 {configure|start|stop|status|reset|reconcile|events|update-dns|add-trust|port-forward|completion|version}"
+    echo "Usage: $0 {configure|start|stop|restart|status|reset|reconcile|events|update-dns|add-trust|port-forward|completion|version}"
     echo
     echo "Commands:"
     echo "  configure      Set up the development environment configuration"
     echo "  start          Start LeptoStack"
     echo "  stop           Stop LeptoStack"
+    echo "  restart        Stop and restart LeptoStack"
     echo "  status         Check LeptoStack status"
     echo "  reset          Delete LeptoStack cluster and restart"
     echo "  reconcile      Reconcile flux-system kustomization"
     echo "  events         Watch all cluster events"
     echo "  update-dns     Configure local DNS to resolve *.test via minikube"
     echo "  add-trust      Add the internal CA certificate to system trust store"
-    echo "  port-forward   Port-forward a service (openbao, rabbitmq, postgres, greenmail)"
+    echo "  port-forward   Port-forward a service (all, openbao, rabbitmq, postgres, valkey, flowable, greenmail)"
     echo "  completion     Generate shell completion script (zsh, bash)"
     echo "  version        Show the leptostack version"
     exit 1
@@ -1294,7 +1333,7 @@ if [[ $# -lt 1 ]]; then
 fi
 
 case "$1" in
-    configure|start|reset)
+    configure|start|restart|reset)
         enforce_update
         ;;
     *)
@@ -1306,6 +1345,7 @@ case "$1" in
     configure)     do_configure ;;
     start)         do_start ;;
     stop)          do_stop ;;
+    restart)       do_restart ;;
     status)        do_status ;;
     reset)         do_reset ;;
     reconcile)     do_reconcile ;;
@@ -1314,7 +1354,7 @@ case "$1" in
     add-trust)     do_add_trust ;;
     port-forward)
         if [[ $# -lt 2 ]]; then
-            echo "Usage: $0 port-forward {openbao|rabbitmq|postgres|greenmail}"
+            echo "Usage: $0 port-forward {all|openbao|rabbitmq|postgres|valkey|flowable|greenmail}"
             exit 1
         fi
         do_port_forward "$2"
