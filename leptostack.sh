@@ -786,6 +786,69 @@ do_configure() {
 
 # --- Start ---
 
+run_flux_bootstrap() {
+    local resync="${1:-}"
+
+    # Sync the cluster template into the repository before bootstrapping
+    sync_cluster_template "$resync"
+
+    # Export PAT based on git server
+    case "$GIT_SERVER" in
+        github)
+            export GITHUB_TOKEN="$GIT_PAT"
+            ;;
+        gitea)
+            export GITEA_TOKEN="$GIT_PAT"
+            ;;
+        gitlab)
+            export GITLAB_TOKEN="$GIT_PAT"
+            ;;
+    esac
+
+    # Run flux bootstrap
+    echo "Running flux bootstrap for $GIT_SERVER..."
+    echo
+
+    case "$GIT_SERVER" in
+        github)
+            flux --context minikube bootstrap github \
+                --token-auth \
+                --components-extra=image-reflector-controller,image-automation-controller \
+                --owner="$GIT_OWNER" \
+                --repository="$GIT_REPO" \
+                --branch="$GIT_BRANCH" \
+                --path="$CLUSTER_PATH" \
+                --personal
+            ;;
+        gitea)
+            flux --context minikube bootstrap gitea \
+                --token-auth \
+                --components-extra=image-reflector-controller,image-automation-controller \
+                --hostname="$GIT_HOSTNAME" \
+                --owner="$GIT_OWNER" \
+                --repository="$GIT_REPO" \
+                --branch="$GIT_BRANCH" \
+                --path="$CLUSTER_PATH" \
+                --personal
+            ;;
+        gitlab)
+            flux --context minikube bootstrap gitlab \
+                --token-auth \
+                --components-extra=image-reflector-controller,image-automation-controller \
+                --hostname="$GIT_HOSTNAME" \
+                --owner="$GIT_OWNER" \
+                --repository="$GIT_REPO" \
+                --branch="$GIT_BRANCH" \
+                --path="$CLUSTER_PATH"
+            ;;
+    esac
+
+    echo
+    echo "Flux bootstrap has been started."
+    echo "You can check the status of the deployment by running:"
+    echo "  flux get kustomizations"
+}
+
 do_start() {
     local resync="${1:-}"
 
@@ -820,61 +883,7 @@ do_start() {
         echo "You can check the status of the deployment by running:"
         echo "  flux get kustomizations"
     else
-        # Sync the cluster template into the repository before bootstrapping
-        sync_cluster_template "$resync"
-
-        # Export PAT based on git server
-        case "$GIT_SERVER" in
-            github)
-                export GITHUB_TOKEN="$GIT_PAT"
-                ;;
-            gitea)
-                export GITEA_TOKEN="$GIT_PAT"
-                ;;
-            gitlab)
-                export GITLAB_TOKEN="$GIT_PAT"
-                ;;
-        esac
-
-        # Run flux bootstrap
-        echo "Running flux bootstrap for $GIT_SERVER..."
-        echo
-
-        case "$GIT_SERVER" in
-            github)
-                flux --context minikube bootstrap github \
-                    --token-auth \
-                    --owner="$GIT_OWNER" \
-                    --repository="$GIT_REPO" \
-                    --branch="$GIT_BRANCH" \
-                    --path="$CLUSTER_PATH" \
-                    --personal
-                ;;
-            gitea)
-                flux --context minikube bootstrap gitea \
-                    --token-auth \
-                    --hostname="$GIT_HOSTNAME" \
-                    --owner="$GIT_OWNER" \
-                    --repository="$GIT_REPO" \
-                    --branch="$GIT_BRANCH" \
-                    --path="$CLUSTER_PATH" \
-                    --personal
-                ;;
-            gitlab)
-                flux --context minikube bootstrap gitlab \
-                    --token-auth \
-                    --hostname="$GIT_HOSTNAME" \
-                    --owner="$GIT_OWNER" \
-                    --repository="$GIT_REPO" \
-                    --branch="$GIT_BRANCH" \
-                    --path="$CLUSTER_PATH"
-                ;;
-        esac
-
-        echo
-        echo "Flux bootstrap has been started."
-        echo "You can check the status of the deployment by running:"
-        echo "  flux get kustomizations"
+        run_flux_bootstrap "$resync"
     fi
 
 
@@ -889,6 +898,24 @@ do_start() {
         --from-literal=username=git \
         --from-literal=password="$RESOURCES_GIT_PAT"
     echo "  Secret leptostack-base created successfully."
+}
+
+# --- Re-bootstrap ---
+
+do_rebootstrap() {
+    load_config
+
+    echo "=== Re-running LeptoStack Flux Bootstrap ==="
+    echo
+
+    if ! minikube status &>/dev/null; then
+        echo "Error: Minikube is not running."
+        echo "Please start it with: $0 start"
+        exit 1
+    fi
+
+    check_kubectl_context
+    run_flux_bootstrap
 }
 
 # --- Status ---
@@ -1216,7 +1243,7 @@ _leptostack() {
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-    commands="configure start stop restart status reset reconcile events update-dns add-trust port-forward completion version"
+    commands="configure start stop restart status reset rebootstrap reconcile events update-dns add-trust port-forward completion version"
     port_forward_services="all openbao rabbitmq postgres valkey flowable greenmail"
 
     if [[ ${COMP_CWORD} -eq 1 ]]; then
@@ -1251,6 +1278,7 @@ _leptostack() {
         'restart:Stop and restart LeptoStack'
         'status:Check LeptoStack status'
         'reset:Delete LeptoStack cluster and restart'
+        'rebootstrap:Re-run the Flux bootstrap to add/update Flux components'
         'reconcile:Reconcile flux-system kustomization'
         'events:Watch all cluster events'
         'update-dns:Configure local DNS to resolve *.test via minikube'
@@ -1309,7 +1337,7 @@ do_version() {
 # --- Main ---
 
 usage() {
-    echo "Usage: $0 {configure|start|stop|restart|status|reset|reconcile|events|update-dns|add-trust|port-forward|completion|version}"
+    echo "Usage: $0 {configure|start|stop|restart|status|reset|rebootstrap|reconcile|events|update-dns|add-trust|port-forward|completion|version}"
     echo
     echo "Commands:"
     echo "  configure      Set up the development environment configuration"
@@ -1318,6 +1346,7 @@ usage() {
     echo "  restart        Stop and restart LeptoStack"
     echo "  status         Check LeptoStack status"
     echo "  reset          Delete LeptoStack cluster and restart"
+    echo "  rebootstrap    Re-run the Flux bootstrap to add/update Flux components"
     echo "  reconcile      Reconcile flux-system kustomization"
     echo "  events         Watch all cluster events"
     echo "  update-dns     Configure local DNS to resolve *.test via minikube"
@@ -1333,7 +1362,7 @@ if [[ $# -lt 1 ]]; then
 fi
 
 case "$1" in
-    configure|start|restart|reset)
+    configure|start|restart|reset|rebootstrap)
         enforce_update
         ;;
     *)
@@ -1348,6 +1377,7 @@ case "$1" in
     restart)       do_restart ;;
     status)        do_status ;;
     reset)         do_reset ;;
+    rebootstrap)   do_rebootstrap ;;
     reconcile)     do_reconcile ;;
     events)        do_events ;;
     update-dns)    do_update_dns ;;
