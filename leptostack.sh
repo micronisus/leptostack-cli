@@ -226,6 +226,12 @@ EOF
     cp "$example_overlay_dir/naming-conf.yaml" "$overlay_dir/naming-conf.yaml"
     cp "$example_overlay_dir/kustomization.yaml" "$overlay_dir/kustomization.yaml"
 
+    if [[ -f "$example_overlay_dir/module-core-images.yaml" ]]; then
+        cp "$example_overlay_dir/module-core-images.yaml" "$overlay_dir/module-core-images.yaml"
+        sed -i "s/example-/${cluster_name}-/g" "$overlay_dir/module-core-images.yaml"
+        echo "  Copied module-core-images.yaml and rewrote example- references to ${cluster_name}-."
+    fi
+
     sed -i "s/^namePrefix: .*/namePrefix: ${cluster_name}-/" "$overlay_dir/kustomization.yaml"
 
     # greenmail is not enabled at base; enable it in the local cluster overlay.
@@ -237,7 +243,6 @@ EOF
     if ! grep -q 'loadBalancerIP' "$overlay_dir/kustomization.yaml"; then
         cat >> "$overlay_dir/kustomization.yaml" <<EOF
 
-patches:
   - target:
       kind: Kustomization
       name: apisix
