@@ -334,6 +334,7 @@ sync_cluster_template() {
     sed -i \
         -e "s/example-keycloak/${cluster_name}-keycloak/g" \
         -e "s/leptostack-example/leptostack-${cluster_name}/g" \
+        -e "s/leptostack-module-example/leptostack-module-${cluster_name}/g" \
         -e "s|overlays/example|overlays/${cluster_name}|g" \
         "$cluster_kustomization_file"
     echo "Renamed example cluster references to ${cluster_name} in ${CLUSTER_PATH}/kustomization.yaml."
@@ -458,11 +459,37 @@ EOF
     chmod 600 "$CONFIG_FILE"
 }
 
+read_masked_secret() {
+    local value=""
+    while IFS= read -rs -n1 char; do
+        if [[ -z "$char" ]]; then
+            break
+        elif [[ "$char" == $'\x7f' || "$char" == $'\b' ]]; then
+            if [[ -n "$value" ]]; then
+                value="${value%?}"
+                echo -ne '\b \b'
+            fi
+        else
+            value+="$char"
+            echo -n '*'
+        fi
+    done
+    echo
+    printf -v "$1" '%s' "$value"
+}
+
 # --- Configure ---
 
 do_configure() {
     echo "=== LeptoStack Configuration ==="
     echo
+
+    if [[ -f "$CONFIG_FILE" ]]; then
+        echo "Loaded existing configuration from $CONFIG_FILE."
+        # shellcheck source=/dev/null
+        source "$CONFIG_FILE"
+        echo
+    fi
 
     # Check kubectl
     echo "Checking kubectl..."
@@ -621,7 +648,16 @@ do_configure() {
     fi
 
     # Ask for repository URL
-    read -rp "Enter the URL to the LeptoStack Local Development Environment Repository: " REPO_URL
+    local repo_url_default=""
+    if [[ -n "${GIT_HOSTNAME:-}" && -n "${GIT_OWNER:-}" && -n "${GIT_REPO:-}" ]]; then
+        repo_url_default="https://${GIT_HOSTNAME}/${GIT_OWNER}/${GIT_REPO}"
+    fi
+    if [[ -n "$repo_url_default" ]]; then
+        read -rp "Enter the URL to the LeptoStack Local Development Environment Repository [${repo_url_default}]: " REPO_URL
+    else
+        read -rp "Enter the URL to the LeptoStack Local Development Environment Repository: " REPO_URL
+    fi
+    REPO_URL="${REPO_URL:-$repo_url_default}"
 
     # Parse URL to extract hostname, owner, repo
     # Supports: https://hostname/owner/repo.git or https://hostname/owner/repo
@@ -646,20 +682,33 @@ do_configure() {
     echo
 
     # Ask for branch
-    read -rp "Enter the branch name [main]: " GIT_BRANCH
-    GIT_BRANCH="${GIT_BRANCH:-main}"
+    local branch_default="${GIT_BRANCH:-main}"
+    read -rp "Enter the branch name [${branch_default}]: " input_branch
+    GIT_BRANCH="${input_branch:-$branch_default}"
 
     # Ask for cluster path
-    read -rp "Enter the path to the cluster within the repo [clusters/local]: " CLUSTER_PATH
-    CLUSTER_PATH="${CLUSTER_PATH:-clusters/local}"
+    local cluster_path_default="${CLUSTER_PATH:-clusters/local}"
+    read -rp "Enter the path to the cluster within the repo [${cluster_path_default}]: " input_cluster_path
+    CLUSTER_PATH="${input_cluster_path:-$cluster_path_default}"
 
     # Ask for Git server type
+    local git_server_default=""
+    case "${GIT_SERVER:-}" in
+        github) git_server_default="1" ;;
+        gitea)  git_server_default="2" ;;
+        gitlab) git_server_default="3" ;;
+    esac
     echo
     echo "Select the Git Server:"
     echo "  1) GitHub"
     echo "  2) Gitea/Forgejo"
     echo "  3) GitLab"
-    read -rp "Enter your choice [1-3]: " git_choice
+    if [[ -n "$git_server_default" ]]; then
+        read -rp "Enter your choice [1-3] (current: ${git_server_default}): " git_choice
+    else
+        read -rp "Enter your choice [1-3]: " git_choice
+    fi
+    git_choice="${git_choice:-$git_server_default}"
 
     case "$git_choice" in
         1) GIT_SERVER="github" ;;
@@ -674,42 +723,34 @@ do_configure() {
     echo
 
     # Ask for PAT
-    echo -n "Enter your Git server Personal Access Token (PAT): "
-    GIT_PAT=""
-    while IFS= read -rs -n1 char; do
-        if [[ -z "$char" ]]; then
-            break
-        elif [[ "$char" == $'\x7f' || "$char" == $'\b' ]]; then
-            if [[ -n "$GIT_PAT" ]]; then
-                GIT_PAT="${GIT_PAT%?}"
-                echo -ne '\b \b'
-            fi
-        else
-            GIT_PAT+="$char"
-            echo -n '*'
-        fi
-    done
-    echo
+    local input_git_pat=""
+    if [[ -n "${GIT_PAT:-}" ]]; then
+        echo -n "Enter your Git server Personal Access Token (PAT) [leave empty to keep the existing value]: "
+    else
+        echo -n "Enter your Git server Personal Access Token (PAT): "
+    fi
+    read_masked_secret input_git_pat
+    if [[ -n "$input_git_pat" ]]; then
+        GIT_PAT="$input_git_pat"
+    fi
+    if [[ -z "${GIT_PAT:-}" ]]; then
+        echo "Error: Git server Personal Access Token (PAT) cannot be empty."
+        exit 1
+    fi
     echo
 
     # Ask for LeptoStack Resources Git Repository PAT
-    echo -n "Enter the LeptoStack Resources Git Repository PAT: "
-    RESOURCES_GIT_PAT=""
-    while IFS= read -rs -n1 char; do
-        if [[ -z "$char" ]]; then
-            break
-        elif [[ "$char" == $'\x7f' || "$char" == $'\b' ]]; then
-            if [[ -n "$RESOURCES_GIT_PAT" ]]; then
-                RESOURCES_GIT_PAT="${RESOURCES_GIT_PAT%?}"
-                echo -ne '\b \b'
-            fi
-        else
-            RESOURCES_GIT_PAT+="$char"
-            echo -n '*'
-        fi
-    done
-    echo
-    if [[ -z "$RESOURCES_GIT_PAT" ]]; then
+    local input_resources_git_pat=""
+    if [[ -n "${RESOURCES_GIT_PAT:-}" ]]; then
+        echo -n "Enter the LeptoStack Resources Git Repository PAT [leave empty to keep the existing value]: "
+    else
+        echo -n "Enter the LeptoStack Resources Git Repository PAT: "
+    fi
+    read_masked_secret input_resources_git_pat
+    if [[ -n "$input_resources_git_pat" ]]; then
+        RESOURCES_GIT_PAT="$input_resources_git_pat"
+    fi
+    if [[ -z "${RESOURCES_GIT_PAT:-}" ]]; then
         echo "Error: LeptoStack Resources Git Repository PAT cannot be empty."
         exit 1
     fi
@@ -754,23 +795,24 @@ do_configure() {
     current_cpus=$(minikube config get cpus 2>/dev/null || echo "not set")
     current_memory=$(minikube config get memory 2>/dev/null || echo "not set")
 
-    MINIKUBE_CPUS=8
-    MINIKUBE_MEMORY=24576
+    MINIKUBE_CPUS="${MINIKUBE_CPUS:-8}"
+    MINIKUBE_MEMORY="${MINIKUBE_MEMORY:-24576}"
 
     echo "Minikube configuration:"
     echo "  Current CPUs:   $current_cpus"
     echo "  Current Memory: $current_memory"
     echo
     echo "Recommended: cpus=8, memory=24576"
+    echo "Configured:  cpus=${MINIKUBE_CPUS}, memory=${MINIKUBE_MEMORY}"
 
-    if [[ "$current_cpus" != "8" || "$current_memory" != "24576" ]]; then
+    if [[ "$current_cpus" != "$MINIKUBE_CPUS" || "$current_memory" != "$MINIKUBE_MEMORY" ]]; then
         echo
-        read -rp "Minikube will be configured with cpus=8 and memory=24576. Do you want to modify these values? [y/N]: " modify_config
+        read -rp "Minikube will be configured with cpus=${MINIKUBE_CPUS} and memory=${MINIKUBE_MEMORY}. Do you want to modify these values? [y/N]: " modify_config
         if [[ "$modify_config" =~ ^[Yy]$ ]]; then
-            read -rp "Enter number of CPUs [8]: " custom_cpus
-            MINIKUBE_CPUS="${custom_cpus:-8}"
-            read -rp "Enter memory in MB [24576]: " custom_memory
-            MINIKUBE_MEMORY="${custom_memory:-24576}"
+            read -rp "Enter number of CPUs [${MINIKUBE_CPUS}]: " custom_cpus
+            MINIKUBE_CPUS="${custom_cpus:-$MINIKUBE_CPUS}"
+            read -rp "Enter memory in MB [${MINIKUBE_MEMORY}]: " custom_memory
+            MINIKUBE_MEMORY="${custom_memory:-$MINIKUBE_MEMORY}"
         fi
     fi
 
