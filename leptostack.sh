@@ -5,6 +5,22 @@ set -euo pipefail
 CONFIG_DIR="${HOME}/.config/leptostack"
 CONFIG_FILE="${CONFIG_DIR}/config"
 
+if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
+    PORT_FORWARD_STATE_DIR="${XDG_RUNTIME_DIR}/leptostack/port-forwards"
+else
+    PORT_FORWARD_STATE_DIR="/tmp/leptostack-port-forwards-$(id -u)"
+    if [[ -L "$PORT_FORWARD_STATE_DIR" ]] || \
+       { [[ -e "$PORT_FORWARD_STATE_DIR" ]] && [[ "$(stat -c '%u' "$PORT_FORWARD_STATE_DIR" 2>/dev/null)" != "$(id -u)" ]]; }; then
+        echo "Error: Refusing to use unsafe port-forward state directory: $PORT_FORWARD_STATE_DIR"
+        exit 1
+    fi
+    if [[ ! -d "$PORT_FORWARD_STATE_DIR" ]]; then
+        mkdir -m 700 "$PORT_FORWARD_STATE_DIR"
+    fi
+fi
+
+PORT_FORWARD_SERVICES=(openbao rabbitmq postgres valkey flowable greenmail)
+
 MINIKUBE_MIN_VERSION="1.38.1"
 FLUX_MIN_VERSION="2.8.7"
 SCRIPT_VERSION="dev"
@@ -37,6 +53,12 @@ detect_distro() {
 }
 
 DISTRO=$(detect_distro)
+
+SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
+if [[ "$SCRIPT_PATH" != */* ]]; then
+    SCRIPT_PATH=$(command -v "$SCRIPT_PATH" 2>/dev/null || printf '%s' "$SCRIPT_PATH")
+fi
+SCRIPT_PATH=$(readlink -f "$SCRIPT_PATH" 2>/dev/null || printf '%s' "$SCRIPT_PATH")
 
 check_kubectl_context() {
     local current_context
@@ -1188,89 +1210,164 @@ print_port_forward_credentials() {
     esac
 }
 
-forward_service() {
+current_boot_id() {
+    cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo "unknown"
+}
+
+process_start_time() {
+    local stat
+    stat=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+    stat="${stat##*) }"
+    awk '{print $20}' <<<"$stat"
+}
+
+port_forward_pid_file() {
+    printf '%s/%s.pid\n' "$PORT_FORWARD_STATE_DIR" "$1"
+}
+
+port_forward_log_file() {
+    printf '%s/%s.log\n' "$PORT_FORWARD_STATE_DIR" "$1"
+}
+
+port_forward_pid() {
+    local pid_file stored_boot stored_start stored_pid current_start
+    pid_file=$(port_forward_pid_file "$1")
+    [[ -f "$pid_file" ]] || return 0
+
+    read -r stored_boot stored_start stored_pid < "$pid_file" || true
+
+    [[ "$stored_boot" == "$(current_boot_id)" ]] || return 0
+    [[ -n "$stored_pid" ]] || return 0
+    current_start=$(process_start_time "$stored_pid") || return 0
+    [[ "$current_start" == "$stored_start" ]] || return 0
+
+    printf '%s' "$stored_pid"
+}
+
+is_port_forward_running() {
+    local service="$1" pid
+    pid=$(port_forward_pid "$service")
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+        return 0
+    fi
+    rm -f "$(port_forward_pid_file "$service")"
+    return 1
+}
+
+exec_port_forward() {
     local service="$1"
 
     case "$service" in
         openbao)
-            echo "Starting port-forward for OpenBao (localhost:8200)..."
-            kubectl --context minikube -n local-openbao port-forward services/local-openbao-openbao 8200:8200
+            exec kubectl --context minikube -n local-openbao port-forward services/local-openbao-openbao 8200:8200
             ;;
         rabbitmq)
-            echo "Starting port-forward for RabbitMQ Management (localhost:15672)..."
-            kubectl --context minikube -n local-rabbitmq port-forward services/portal-rabbitmq 15672:15672
+            exec kubectl --context minikube -n local-rabbitmq port-forward services/portal-rabbitmq 15672:15672
             ;;
         postgres)
-            echo "Starting port-forward for PostgreSQL (localhost:5432)..."
-            kubectl --context minikube -n local-pgcluster port-forward services/local-pgcluster-rw 5432:5432
+            exec kubectl --context minikube -n local-pgcluster port-forward services/local-pgcluster-rw 5432:5432
             ;;
         valkey)
-            echo "Starting port-forward for Valkey (localhost:6379)..."
-            kubectl --context minikube -n local-valkey port-forward services/valkey-portal-valkey 6379:6379
+            exec kubectl --context minikube -n local-valkey port-forward services/valkey-portal-valkey 6379:6379
             ;;
         flowable)
-            echo "Starting port-forward for Flowable REST (localhost:8080)..."
-            kubectl --context minikube -n local-flowable port-forward services/flowable-rest 8080:8080
+            exec kubectl --context minikube -n local-flowable port-forward services/flowable-rest 8080:8080
             ;;
         greenmail)
-            echo "Starting port-forward for GreenMail (localhost:8025)..."
-            kubectl --context minikube -n greenmail port-forward services/api 8025:80
+            exec kubectl --context minikube -n greenmail port-forward services/api 8025:80
             ;;
     esac
 }
 
-start_all_port_forwards() {
-    local services=(openbao rabbitmq postgres valkey flowable greenmail)
-    local pids=()
-    local service interrupted=false failed=false
+run_port_forward() {
+    local service="$1" start_time
 
-    for service in "${services[@]}"; do
-        print_port_forward_credentials "$service"
-    done
+    mkdir -p "$PORT_FORWARD_STATE_DIR"
+    start_time=$(process_start_time "$$")
+    printf '%s %s %s\n' "$(current_boot_id)" "$start_time" "$$" > "$(port_forward_pid_file "$service")"
+    exec_port_forward "$service"
+}
 
-    trap 'interrupted=true; kill $(jobs -p) 2>/dev/null || true' INT TERM
+start_port_forward_service() {
+    local service="$1"
 
-    for service in "${services[@]}"; do
-        forward_service "$service" &
-        pids+=("$!")
-    done
-
-    echo
-    echo "All port-forwards are running (openbao, rabbitmq, postgres, valkey, flowable, greenmail)."
-    echo "Press Ctrl+C to stop them."
-    echo
-
-    for pid in "${pids[@]}"; do
-        wait "$pid" 2>/dev/null || failed=true
-    done
-
-    trap - INT TERM
-    if [[ "$interrupted" == "true" ]]; then
-        echo "Port-forwards stopped."
-        return 130
+    if is_port_forward_running "$service"; then
+        echo "Port-forward for ${service} is already active (pid $(port_forward_pid "$service"))."
+        return 0
     fi
-    if [[ "$failed" == "true" ]]; then
-        echo "Warning: one or more port-forwards exited early. Check for port conflicts above."
+
+    local log_file
+    log_file=$(port_forward_log_file "$service")
+    mkdir -p "$PORT_FORWARD_STATE_DIR"
+    rm -f "$(port_forward_pid_file "$service")"
+    : > "$log_file"
+
+    if command -v setsid &>/dev/null; then
+        setsid bash "$SCRIPT_PATH" __port-forward-run "$service" >>"$log_file" 2>&1 </dev/null &
+    else
+        nohup bash "$SCRIPT_PATH" __port-forward-run "$service" >>"$log_file" 2>&1 </dev/null &
+    fi
+
+    # Wait briefly for the background process to publish its PID.
+    local _i
+    for _i in {1..20}; do
+        [[ -s "$(port_forward_pid_file "$service")" ]] && break
+        sleep 0.1
+    done
+
+    if is_port_forward_running "$service"; then
+        echo "Port-forward for ${service} started in the background (pid $(port_forward_pid "$service"))."
+    else
+        echo "Warning: Port-forward for ${service} did not start. See ${log_file} for details."
+    fi
+    echo "Logs: ${log_file}"
+    echo
+}
+
+stop_all_port_forwards() {
+    local stopped=0 service pid
+    for service in "${PORT_FORWARD_SERVICES[@]}"; do
+        pid=$(port_forward_pid "$service")
+        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null || true
+            echo "Stopped port-forward for ${service} (pid ${pid})."
+            stopped=$((stopped + 1))
+        fi
+        rm -f "$(port_forward_pid_file "$service")"
+    done
+
+    if [[ "$stopped" -eq 0 ]]; then
+        echo "No active port-forwards."
     fi
 }
 
 do_port_forward() {
     local service="$1"
 
+    # Stopping must work even when the cluster is unreachable.
+    if [[ "$service" == "stop" ]]; then
+        stop_all_port_forwards
+        return
+    fi
+
     check_kubectl_context
     check_kustomization_ready "infra-config"
 
     case "$service" in
         all)
-            start_all_port_forwards
+            local svc
+            for svc in "${PORT_FORWARD_SERVICES[@]}"; do
+                print_port_forward_credentials "$svc"
+                start_port_forward_service "$svc"
+            done
             ;;
         openbao|rabbitmq|postgres|valkey|flowable|greenmail)
             print_port_forward_credentials "$service"
-            forward_service "$service"
+            start_port_forward_service "$service"
             ;;
         *)
             echo "Error: Unknown service '$service'."
-            echo "Supported services: all, openbao, rabbitmq, postgres, valkey, flowable, greenmail"
+            echo "Supported services: all, stop, openbao, rabbitmq, postgres, valkey, flowable, greenmail"
             exit 1
             ;;
     esac
@@ -1291,7 +1388,7 @@ _leptostack() {
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
     commands="configure start stop restart status reset rebootstrap reconcile events update-dns add-trust port-forward completion version"
-    port_forward_services="all openbao rabbitmq postgres valkey flowable greenmail"
+    port_forward_services="all stop openbao rabbitmq postgres valkey flowable greenmail"
 
     if [[ ${COMP_CWORD} -eq 1 ]]; then
         COMPREPLY=( $(compgen -W "${commands}" -- "${cur}") )
@@ -1330,7 +1427,7 @@ _leptostack() {
         'events:Watch all cluster events'
         'update-dns:Configure local DNS to resolve *.test via minikube'
         'add-trust:Add the internal CA certificate to system trust store'
-        'port-forward:Port-forward a service'
+        'port-forward:Port-forward a service in the background'
         'completion:Generate shell completion script'
         'version:Show the leptostack version'
     )
@@ -1347,7 +1444,7 @@ _leptostack() {
             case $words[1] in
                 port-forward)
                     local -a services
-                    services=('openbao:Port-forward OpenBao' 'rabbitmq:Port-forward RabbitMQ' 'postgres:Port-forward PostgreSQL' 'valkey:Port-forward Valkey' 'flowable:Port-forward Flowable REST' 'greenmail:Port-forward GreenMail' 'all:Port-forward all services')
+                    services=('openbao:Port-forward OpenBao' 'rabbitmq:Port-forward RabbitMQ' 'postgres:Port-forward PostgreSQL' 'valkey:Port-forward Valkey' 'flowable:Port-forward Flowable REST' 'greenmail:Port-forward GreenMail' 'all:Port-forward all services' 'stop:Stop all port-forwards')
                     _describe -t services 'service' services
                     ;;
                 completion)
@@ -1398,7 +1495,7 @@ usage() {
     echo "  events         Watch all cluster events"
     echo "  update-dns     Configure local DNS to resolve *.test via minikube"
     echo "  add-trust      Add the internal CA certificate to system trust store"
-    echo "  port-forward   Port-forward a service (all, openbao, rabbitmq, postgres, valkey, flowable, greenmail)"
+    echo "  port-forward   Port-forward a service in the background (all, stop, openbao, rabbitmq, postgres, valkey, flowable, greenmail)"
     echo "  completion     Generate shell completion script (zsh, bash)"
     echo "  version        Show the leptostack version"
     exit 1
@@ -1411,6 +1508,8 @@ fi
 case "$1" in
     configure|start|restart|reset|rebootstrap)
         enforce_update
+        ;;
+    __port-forward-run)
         ;;
     *)
         check_for_updates "false" || true
@@ -1431,7 +1530,7 @@ case "$1" in
     add-trust)     do_add_trust ;;
     port-forward)
         if [[ $# -lt 2 ]]; then
-            echo "Usage: $0 port-forward {all|openbao|rabbitmq|postgres|valkey|flowable|greenmail}"
+            echo "Usage: $0 port-forward {all|stop|openbao|rabbitmq|postgres|valkey|flowable|greenmail}"
             exit 1
         fi
         do_port_forward "$2"
@@ -1442,6 +1541,13 @@ case "$1" in
             exit 1
         fi
         do_completion "$2"
+        ;;
+    __port-forward-run)
+        if [[ $# -lt 2 ]]; then
+            echo "Error: __port-forward-run requires a service." >&2
+            exit 1
+        fi
+        run_port_forward "$2"
         ;;
     version)       do_version ;;
     *)             usage ;;
