@@ -1262,7 +1262,7 @@ exec_port_forward() {
             exec kubectl --context minikube -n local-openbao port-forward services/local-openbao-openbao 8200:8200
             ;;
         rabbitmq)
-            exec kubectl --context minikube -n local-rabbitmq port-forward services/portal-rabbitmq 15672:15672
+            exec kubectl --context minikube -n local-rabbitmq port-forward services/portal-rabbitmq 15671:15671
             ;;
         postgres)
             exec kubectl --context minikube -n local-pgcluster port-forward services/local-pgcluster-rw 5432:5432
