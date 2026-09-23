@@ -22,6 +22,7 @@ fi
 PORT_FORWARD_SERVICES=(openbao rabbitmq postgres valkey flowable greenmail)
 
 MINIKUBE_MIN_VERSION="1.38.1"
+VCLUSTER_MIN_VERSION="0.37.1"
 FLUX_MIN_VERSION="2.8.7"
 SCRIPT_VERSION="dev"
 
@@ -61,11 +62,13 @@ fi
 SCRIPT_PATH=$(readlink -f "$SCRIPT_PATH" 2>/dev/null || printf '%s' "$SCRIPT_PATH")
 
 check_kubectl_context() {
+    load_config
+
     local current_context
     current_context=$(kubectl config current-context 2>/dev/null || echo "")
-    if [[ "$current_context" != "minikube" ]]; then
-        echo "Error: kubectl context is not set to minikube (current: '${current_context:-<none>}')."
-        echo "Please switch context with: kubectl config use-context minikube"
+    if [[ "$current_context" != "$KUBE_CONTEXT" ]]; then
+        echo "Error: kubectl context is not set to ${KUBE_CONTEXT} (current: '${current_context:-<none>}')."
+        echo "Please run '$0 start' to create and select the ${KUBE_CONTEXT} context."
         exit 1
     fi
 }
@@ -129,8 +132,41 @@ generate_cluster_config() {
         exit 1
     fi
 
-    echo "Creating infrastructure/cluster-config.yaml..."
-    cat > "$cluster_config_file" <<EOF
+    if [[ "$CLUSTER_PROVIDER" == "vcluster" ]]; then
+        # vcluster provides the cluster's DNS and ingress class; only the
+        # registry Ingress is written into the repository.
+        echo "Creating infrastructure/cluster-config.yaml (vcluster)..."
+        cat > "$cluster_config_file" <<EOF
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    cert-manager.io/cluster-issuer: internal-issuer
+    k8s.apisix.apache.org/plugin-config-name: ${cluster_name}-plugin-config
+  name: registry-ingress
+  namespace: kube-system
+spec:
+  ingressClassName: ${cluster_name}-apisix
+  tls:
+    - hosts:
+        - registry.${LEPTOSTACK_DOMAIN}
+      secretName: registry-tls
+  rules:
+    - host: registry.${LEPTOSTACK_DOMAIN}
+      http:
+        paths:
+          - backend:
+              service:
+                name: registry
+                port:
+                  number: 80
+            path: /
+            pathType: Prefix
+EOF
+    else
+        echo "Creating infrastructure/cluster-config.yaml..."
+        cat > "$cluster_config_file" <<EOF
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -150,17 +186,17 @@ kind: Ingress
 metadata:
   annotations:
     cert-manager.io/cluster-issuer: internal-issuer
-    k8s.apisix.apache.org/plugin-config-name: local-plugin-config
+    k8s.apisix.apache.org/plugin-config-name: ${cluster_name}-plugin-config
   name: registry-ingress
   namespace: kube-system
 spec:
-  ingressClassName: local-apisix
+  ingressClassName: ${cluster_name}-apisix
   tls:
     - hosts:
-        - registry.minikube.test
+        - registry.${LEPTOSTACK_DOMAIN}
       secretName: registry-tls
   rules:
-    - host: registry.minikube.test
+    - host: registry.${LEPTOSTACK_DOMAIN}
       http:
         paths:
           - backend:
@@ -197,7 +233,7 @@ data:
            lameduck 5s
         }
         ready
-        rewrite name regex ^((.*)\.)?api\.local\.internal\.$ apisix-internal-gateway.ingress-local-internal.svc.cluster.local answer auto
+        rewrite name regex ^((.*)\.)?api\.${cluster_name}\.internal\.$ apisix-internal-gateway.ingress-${cluster_name}-internal.svc.cluster.local answer auto
         kubernetes cluster.local in-addr.arpa ip6.arpa {
            pods insecure
            fallthrough in-addr.arpa ip6.arpa
@@ -205,7 +241,7 @@ data:
         }
         prometheus :9153
         hosts {
-           $(minikube ip) host.minikube.internal
+           $(minikube ip -p "${MINIKUBE_PROFILE}") host.minikube.internal
            fallthrough
         }
         forward . /etc/resolv.conf {
@@ -220,6 +256,7 @@ data:
         loadbalance
     }
 EOF
+    fi
 
     if grep -q -- 'cluster-config.yaml' "$infra_kustomization_file"; then
         echo "  cluster-config.yaml already referenced in infrastructure/kustomization.yaml."
@@ -228,11 +265,17 @@ EOF
         sed -i '/^resources:/a\  - cluster-config.yaml' "$infra_kustomization_file"
     fi
 
-    # Calculate the load balancer IP on the minikube subnet (.100)
-    local minikube_ip subnet lb_ip
-    minikube_ip=$(minikube ip)
-    subnet=$(echo "$minikube_ip" | cut -d'.' -f1-3)
-    lb_ip="${subnet}.100"
+    # Calculate the load balancer IP on the minikube subnet (.100). vcluster
+    # gets its address from the host ingress, so no IP is pinned there, but the
+    # apisix gateway is still exposed as a LoadBalancer so the host can route
+    # to it.
+    local lb_ip=""
+    if [[ "$CLUSTER_PROVIDER" != "vcluster" ]]; then
+        local minikube_ip subnet
+        minikube_ip=$(minikube ip -p "${MINIKUBE_PROFILE}")
+        subnet=$(echo "$minikube_ip" | cut -d'.' -f1-3)
+        lb_ip="${subnet}.100"
+    fi
 
     # Reuse the example overlay from the cluster template for the local overlay so
     # template changes don't require updating this script. Only the namePrefix and
@@ -262,7 +305,10 @@ EOF
         echo "  Added ../../base/greenmail.yaml to overlay kustomization resources."
     fi
 
-    if ! grep -q 'loadBalancerIP' "$overlay_dir/kustomization.yaml"; then
+    # Expose the apisix gateway through a LoadBalancer. vcluster relies on the
+    # host ingress for the address, so no loadBalancerIP is pinned; minikube
+    # pins the MetalLB address on the minikube subnet.
+    if ! grep -q 'name: apisix$' "$overlay_dir/kustomization.yaml"; then
         cat >> "$overlay_dir/kustomization.yaml" <<EOF
 
   - target:
@@ -280,8 +326,34 @@ EOF
                 path: /spec/values/service
                 value:
                   type: LoadBalancer
-                  loadBalancerIP: ${lb_ip}
 EOF
+        if [[ "$CLUSTER_PROVIDER" != "vcluster" ]]; then
+            printf '                  loadBalancerIP: %s\n' "${lb_ip}" >> "$overlay_dir/kustomization.yaml"
+        fi
+        echo "  Added apisix LoadBalancer patch to overlay kustomization."
+    fi
+
+    # The deployed manifests read the cluster identity from the leptostack-config
+    # ConfigMap; keep it in sync with the values configured in this CLI.
+    if ! grep -q 'name: leptostack-config' "$overlay_dir/kustomization.yaml"; then
+        cat >> "$overlay_dir/kustomization.yaml" <<EOF
+
+  - target:
+      kind: ConfigMap
+      name: leptostack-config
+      namespace: flux-system
+    patch: |-
+      - op: replace
+        path: /data/cluster_name
+        value: ${cluster_name}
+      - op: replace
+        path: /data/leptostack_domain
+        value: ${LEPTOSTACK_DOMAIN}
+      - op: replace
+        path: /data/leptostack_name
+        value: ${LEPTOSTACK_NAME}
+EOF
+        echo "  Added leptostack-config patch (cluster_name, leptostack_domain, leptostack_name) to overlay kustomization."
     fi
 
     echo "Cluster overlay files created at apps/leptostack/overlays/${cluster_name}"
@@ -295,30 +367,28 @@ sync_cluster_template() {
     local repo_clone_url
     repo_clone_url=$(build_clone_url "$GIT_OWNER" "$GIT_REPO")
 
-    # Skip when the branch already exists, unless forced (reset). Checking the
-    # branch (not HEAD) also covers repos whose default branch differs from
-    # GIT_BRANCH, where HEAD can dangle while the branch has content.
+    # The repository is populated unless it already contains the cluster
+    # configuration at clusters/<name>; a repository that only has an
+    # auto-generated initial commit must still be populated. A reset forces the
+    # sync regardless.
     local refs
     refs=$(git ls-remote "$repo_clone_url" "refs/heads/$GIT_BRANCH" 2>/dev/null) || true
-    if [[ -z "$force" && -n "$refs" ]]; then
-        echo "Repository ${GIT_OWNER}/${GIT_REPO} already contains content; skipping cluster template sync."
-        return 0
-    fi
 
     local tmp_dir orig_dir
     tmp_dir=$(mktemp -d /tmp/leptostack-template-XXXXXX)
     orig_dir=$(pwd)
     trap 'rm -rf "$tmp_dir"' EXIT
 
-    echo "Cloning cluster template ${TEMPLATE_GIT_URL}..."
-    git clone --branch "$TEMPLATE_GIT_BRANCH" --depth 1 "$(build_template_clone_url)" "$tmp_dir/template"
-    # The template is only read locally; drop the origin so the PAT never
-    # persists in the cloned repository's remote configuration.
-    git -C "$tmp_dir/template" remote remove origin
-
     echo "Cloning repository ${GIT_OWNER}/${GIT_REPO}..."
     if [[ -n "$refs" ]]; then
         git clone --branch "$GIT_BRANCH" --depth 1 "$repo_clone_url" "$tmp_dir/repo"
+
+        if [[ -z "$force" && -d "$tmp_dir/repo/clusters/${CLUSTER_NAME}" ]]; then
+            echo "Repository ${GIT_OWNER}/${GIT_REPO} already contains the cluster configuration for '${CLUSTER_NAME}'; skipping cluster template sync."
+            trap - EXIT
+            rm -rf "$tmp_dir"
+            return 0
+        fi
     else
         git clone "$repo_clone_url" "$tmp_dir/repo"
     fi
@@ -328,6 +398,12 @@ sync_cluster_template() {
     if [[ -z "$refs" ]]; then
         git checkout -B "$GIT_BRANCH"
     fi
+
+    echo "Cloning cluster template ${TEMPLATE_GIT_URL}..."
+    git clone --branch "$TEMPLATE_GIT_BRANCH" --depth 1 "$(build_template_clone_url)" "$tmp_dir/template"
+    # The template is only read locally; drop the origin so the PAT never
+    # persists in the cloned repository's remote configuration.
+    git -C "$tmp_dir/template" remote remove origin
 
     echo "Replacing repository contents with the cluster template..."
     find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
@@ -346,8 +422,10 @@ sync_cluster_template() {
     mv "$example_dir" "${tmp_dir}/repo/${CLUSTER_PATH}"
     echo "Copied clusters/example to ${CLUSTER_PATH}."
 
+    # Use CLUSTER_NAME (not basename CLUSTER_PATH) so the generated names cannot
+    # diverge from the context and minikube profile derived from it.
     local cluster_name cluster_kustomization_file
-    cluster_name=$(basename "$CLUSTER_PATH")
+    cluster_name="$CLUSTER_NAME"
     cluster_kustomization_file="${tmp_dir}/repo/${CLUSTER_PATH}/kustomization.yaml"
     if [[ ! -f "$cluster_kustomization_file" ]]; then
         echo "Error: Could not find ${CLUSTER_PATH}/kustomization.yaml in the cluster template."
@@ -451,6 +529,22 @@ enforce_update() {
     fi
 }
 
+get_context_name() {
+    # Returns the kubectl context name for the deployed LeptoStack based on the
+    # current configuration and the selected cluster provider.
+    if [[ "${CLUSTER_PROVIDER:-minikube}" == "vcluster" ]]; then
+        if [[ -n "${VCLUSTER_CONTEXT:-}" ]]; then
+            # The exact context name vcluster generated for this cluster.
+            printf '%s\n' "$VCLUSTER_CONTEXT"
+        else
+            # vcluster naming convention: vcluster_<name>_<namespace>_<host-context>.
+            printf 'vcluster_%s_%s_%s\n' "${CLUSTER_NAME:-local}" "${HOST_NAMESPACE:-}" "${HOST_CONTEXT:-}"
+        fi
+    else
+        printf 'leptostack-%s\n' "${CLUSTER_NAME:-local}"
+    fi
+}
+
 load_config() {
     if [[ ! -f "$CONFIG_FILE" ]]; then
         echo "Error: Configuration not found. Please run '$0 configure' first."
@@ -458,12 +552,36 @@ load_config() {
     fi
     # shellcheck source=/dev/null
     source "$CONFIG_FILE"
+
+    # Defaults keep configuration files written by older versions working under
+    # `set -u`; the derived names are never persisted.
+    CLUSTER_PROVIDER="${CLUSTER_PROVIDER:-minikube}"
+    CLUSTER_NAME="${CLUSTER_NAME:-local}"
+    LEPTOSTACK_NAME="${LEPTOSTACK_NAME:-portal}"
+    LEPTOSTACK_DOMAIN="${LEPTOSTACK_DOMAIN:-${USER:-$(id -un)}-leptostack.test}"
+    HOST_CONTEXT="${HOST_CONTEXT:-}"
+    HOST_NAMESPACE="${HOST_NAMESPACE:-${USER:-$(id -un)}}"
+    DNS_TARGET_IP="${DNS_TARGET_IP:-}"
+
+    MINIKUBE_PROFILE="leptostack-${CLUSTER_NAME}"
+    VCLUSTER_CONTEXT="${VCLUSTER_CONTEXT:-}"
+    KUBE_CONTEXT=$(get_context_name)
 }
 
 save_config() {
     mkdir -p "$CONFIG_DIR"
     TEMPLATE_GIT_URL="${TEMPLATE_GIT_URL:-$TEMPLATE_GIT_URL_DEFAULT}"
     TEMPLATE_GIT_BRANCH="${TEMPLATE_GIT_BRANCH:-$TEMPLATE_GIT_BRANCH_DEFAULT}"
+    CLUSTER_PROVIDER="${CLUSTER_PROVIDER:-minikube}"
+    CLUSTER_NAME="${CLUSTER_NAME:-local}"
+    LEPTOSTACK_NAME="${LEPTOSTACK_NAME:-portal}"
+    LEPTOSTACK_DOMAIN="${LEPTOSTACK_DOMAIN:-}"
+    HOST_CONTEXT="${HOST_CONTEXT:-}"
+    HOST_NAMESPACE="${HOST_NAMESPACE:-}"
+    DNS_TARGET_IP="${DNS_TARGET_IP:-}"
+    VCLUSTER_CONTEXT="${VCLUSTER_CONTEXT:-}"
+    MINIKUBE_CPUS="${MINIKUBE_CPUS:-8}"
+    MINIKUBE_MEMORY="${MINIKUBE_MEMORY:-24576}"
     cat > "$CONFIG_FILE" <<EOF
 GIT_SERVER="${GIT_SERVER}"
 GIT_PAT="${GIT_PAT}"
@@ -472,6 +590,14 @@ GIT_OWNER="${GIT_OWNER}"
 GIT_REPO="${GIT_REPO}"
 GIT_BRANCH="${GIT_BRANCH}"
 CLUSTER_PATH="${CLUSTER_PATH}"
+CLUSTER_PROVIDER="${CLUSTER_PROVIDER}"
+CLUSTER_NAME="${CLUSTER_NAME}"
+LEPTOSTACK_NAME="${LEPTOSTACK_NAME}"
+LEPTOSTACK_DOMAIN="${LEPTOSTACK_DOMAIN}"
+HOST_CONTEXT="${HOST_CONTEXT}"
+HOST_NAMESPACE="${HOST_NAMESPACE}"
+DNS_TARGET_IP="${DNS_TARGET_IP}"
+VCLUSTER_CONTEXT="${VCLUSTER_CONTEXT}"
 MINIKUBE_CPUS="${MINIKUBE_CPUS}"
 MINIKUBE_MEMORY="${MINIKUBE_MEMORY}"
 RESOURCES_GIT_PAT="${RESOURCES_GIT_PAT}"
@@ -479,6 +605,20 @@ TEMPLATE_GIT_URL="${TEMPLATE_GIT_URL}"
 TEMPLATE_GIT_BRANCH="${TEMPLATE_GIT_BRANCH}"
 EOF
     chmod 600 "$CONFIG_FILE"
+}
+
+update_config_value() {
+    # Updates a single key in the persisted config without rewriting the whole
+    # file. Used to record the vcluster-generated context name.
+    local key="$1" value="$2" escaped
+    escaped="${value//\\/\\\\}"
+    escaped="${escaped//&/\\&}"
+    escaped="${escaped//\//\\/}"
+    if grep -q "^${key}=" "$CONFIG_FILE"; then
+        sed -i "s/^${key}=.*/${key}=\"${escaped}\"/" "$CONFIG_FILE"
+    else
+        printf '%s="%s"\n' "$key" "$value" >> "$CONFIG_FILE"
+    fi
 }
 
 read_masked_secret() {
@@ -500,61 +640,7 @@ read_masked_secret() {
     printf -v "$1" '%s' "$value"
 }
 
-# --- Configure ---
-
-do_configure() {
-    echo "=== LeptoStack Configuration ==="
-    echo
-
-    if [[ -f "$CONFIG_FILE" ]]; then
-        echo "Loaded existing configuration from $CONFIG_FILE."
-        # shellcheck source=/dev/null
-        source "$CONFIG_FILE"
-        echo
-    fi
-
-    # Check kubectl
-    echo "Checking kubectl..."
-    if ! command -v kubectl &>/dev/null; then
-        echo "Error: kubectl is not installed."
-        echo "Please install it from: https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/#install-using-native-package-management"
-        exit 1
-    fi
-    echo "  kubectl OK"
-
-    # Check minikube
-    echo "Checking minikube..."
-    if ! command -v minikube &>/dev/null; then
-        echo "Error: minikube is not installed."
-        echo "Please download it from: https://minikube.sigs.k8s.io/docs/start/"
-        exit 1
-    fi
-    local mk_version
-    mk_version=$(minikube version --short 2>/dev/null | sed 's/^v//')
-    if ! version_ge "$mk_version" "$MINIKUBE_MIN_VERSION"; then
-        echo "Error: minikube version $mk_version is too old. Minimum required: $MINIKUBE_MIN_VERSION"
-        echo "Please update from: https://minikube.sigs.k8s.io/docs/start/"
-        exit 1
-    fi
-    echo "  minikube $mk_version OK"
-
-    # Check flux
-    echo "Checking flux..."
-    if ! command -v flux &>/dev/null; then
-        echo "Error: flux CLI is not installed."
-        echo "Please download it from: https://fluxcd.io/flux/installation/"
-        exit 1
-    fi
-    local flux_version
-    flux_version=$(flux -v 2>/dev/null | grep -oP '\d+\.\d+\.\d+')
-    if ! version_ge "$flux_version" "$FLUX_MIN_VERSION"; then
-        echo "Error: flux version $flux_version is too old. Minimum required: $FLUX_MIN_VERSION"
-        echo "Please update from: https://fluxcd.io/flux/installation/"
-        exit 1
-    fi
-    echo "  flux $flux_version OK"
-    echo
-
+configure_minikube_prerequisites() {
     # Check system resources
     local sys_ram_kb sys_ram_gb sys_cpus
     sys_ram_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
@@ -668,6 +754,225 @@ do_configure() {
         fi
         echo
     fi
+}
+
+configure_minikube_resources() {
+    # Check minikube configuration
+    local current_cpus current_memory
+    current_cpus=$(minikube config get cpus 2>/dev/null || echo "not set")
+    current_memory=$(minikube config get memory 2>/dev/null || echo "not set")
+
+    MINIKUBE_CPUS="${MINIKUBE_CPUS:-8}"
+    MINIKUBE_MEMORY="${MINIKUBE_MEMORY:-24576}"
+
+    echo "Minikube configuration:"
+    echo "  Current CPUs:   $current_cpus"
+    echo "  Current Memory: $current_memory"
+    echo
+    echo "Recommended: cpus=8, memory=24576"
+    echo "Configured:  cpus=${MINIKUBE_CPUS}, memory=${MINIKUBE_MEMORY}"
+
+    if [[ "$current_cpus" != "$MINIKUBE_CPUS" || "$current_memory" != "$MINIKUBE_MEMORY" ]]; then
+        echo
+        read -rp "Minikube will be configured with cpus=${MINIKUBE_CPUS} and memory=${MINIKUBE_MEMORY}. Do you want to modify these values? [y/N]: " modify_config
+        if [[ "$modify_config" =~ ^[Yy]$ ]]; then
+            read -rp "Enter number of CPUs [${MINIKUBE_CPUS}]: " custom_cpus
+            MINIKUBE_CPUS="${custom_cpus:-$MINIKUBE_CPUS}"
+            read -rp "Enter memory in MB [${MINIKUBE_MEMORY}]: " custom_memory
+            MINIKUBE_MEMORY="${custom_memory:-$MINIKUBE_MEMORY}"
+        fi
+    fi
+
+    # Apply minikube config
+    echo
+    echo "Configuring minikube with cpus=$MINIKUBE_CPUS and memory=$MINIKUBE_MEMORY..."
+    minikube config set cpus "$MINIKUBE_CPUS"
+    minikube config set memory "$MINIKUBE_MEMORY"
+}
+
+# --- Configure ---
+
+do_configure() {
+    echo "=== LeptoStack Configuration ==="
+    echo
+
+    if [[ -f "$CONFIG_FILE" ]]; then
+        echo "Loaded existing configuration from $CONFIG_FILE."
+        # shellcheck source=/dev/null
+        source "$CONFIG_FILE"
+        echo
+    fi
+
+    # Defaults for configuration files written by older versions.
+    CLUSTER_PROVIDER="${CLUSTER_PROVIDER:-minikube}"
+    CLUSTER_NAME="${CLUSTER_NAME:-local}"
+    LEPTOSTACK_NAME="${LEPTOSTACK_NAME:-portal}"
+    LEPTOSTACK_DOMAIN="${LEPTOSTACK_DOMAIN:-}"
+    HOST_CONTEXT="${HOST_CONTEXT:-}"
+    HOST_NAMESPACE="${HOST_NAMESPACE:-}"
+    DNS_TARGET_IP="${DNS_TARGET_IP:-}"
+    VCLUSTER_CONTEXT="${VCLUSTER_CONTEXT:-}"
+
+    # Remember the inputs the stored vcluster context name was generated for.
+    local old_cluster_name="$CLUSTER_NAME"
+    local old_host_context="$HOST_CONTEXT"
+    local old_host_namespace="$HOST_NAMESPACE"
+
+    # Check kubectl
+    echo "Checking kubectl..."
+    if ! command -v kubectl &>/dev/null; then
+        echo "Error: kubectl is not installed."
+        echo "Please install it from: https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/#install-using-native-package-management"
+        exit 1
+    fi
+    echo "  kubectl OK"
+    echo
+
+    # Select the cluster provider
+    local provider_default="1"
+    if [[ "$CLUSTER_PROVIDER" == "vcluster" ]]; then
+        provider_default="2"
+    fi
+    echo "Select the cluster provider:"
+    echo "  1) minikube  (local cluster managed by minikube)"
+    echo "  2) vcluster  (virtual cluster on an existing Kubernetes cluster)"
+    read -rp "Enter your choice [1-2] (current: ${provider_default}): " provider_choice
+    provider_choice="${provider_choice:-$provider_default}"
+    case "$provider_choice" in
+        1) CLUSTER_PROVIDER="minikube" ;;
+        2) CLUSTER_PROVIDER="vcluster" ;;
+        *)
+            echo "Error: Invalid choice."
+            exit 1
+            ;;
+    esac
+    echo "  Selected: $CLUSTER_PROVIDER"
+    echo
+
+    if [[ "$CLUSTER_PROVIDER" == "minikube" ]]; then
+        # Check minikube
+        echo "Checking minikube..."
+        if ! command -v minikube &>/dev/null; then
+            echo "Error: minikube is not installed."
+            echo "Please download it from: https://minikube.sigs.k8s.io/docs/start/"
+            exit 1
+        fi
+        local mk_version
+        mk_version=$(minikube version --short 2>/dev/null | sed 's/^v//')
+        if ! version_ge "$mk_version" "$MINIKUBE_MIN_VERSION"; then
+            echo "Error: minikube version $mk_version is too old. Minimum required: $MINIKUBE_MIN_VERSION"
+            echo "Please update from: https://minikube.sigs.k8s.io/docs/start/"
+            exit 1
+        fi
+        echo "  minikube $mk_version OK"
+        echo
+    else
+        # Check vcluster
+        echo "Checking vcluster..."
+        if ! command -v vcluster &>/dev/null; then
+            echo "Error: vcluster CLI is not installed."
+            echo "Please download it from: https://www.vcluster.com/docs/getting-started/setup"
+            exit 1
+        fi
+        local vc_version
+        vc_version=$(vcluster --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)
+        if [[ -z "$vc_version" ]] || ! version_ge "$vc_version" "$VCLUSTER_MIN_VERSION"; then
+            echo "Error: vcluster version ${vc_version:-unknown} is too old. Minimum required: $VCLUSTER_MIN_VERSION"
+            echo "Please update from: https://www.vcluster.com/docs/getting-started/setup"
+            exit 1
+        fi
+        echo "  vcluster $vc_version OK"
+        echo
+    fi
+
+    # Check flux
+    echo "Checking flux..."
+    if ! command -v flux &>/dev/null; then
+        echo "Error: flux CLI is not installed."
+        echo "Please download it from: https://fluxcd.io/flux/installation/"
+        exit 1
+    fi
+    local flux_version
+    flux_version=$(flux -v 2>/dev/null | grep -oP '\d+\.\d+\.\d+')
+    if ! version_ge "$flux_version" "$FLUX_MIN_VERSION"; then
+        echo "Error: flux version $flux_version is too old. Minimum required: $FLUX_MIN_VERSION"
+        echo "Please update from: https://fluxcd.io/flux/installation/"
+        exit 1
+    fi
+    echo "  flux $flux_version OK"
+    echo
+
+    if [[ "$CLUSTER_PROVIDER" == "vcluster" ]]; then
+        # Host cluster that the vcluster is created on.
+        local current_context host_context_default=""
+        current_context=$(kubectl config current-context 2>/dev/null || echo "")
+        if [[ -n "$current_context" && "$current_context" != "minikube" && "$current_context" != leptostack-* ]]; then
+            host_context_default="$current_context"
+        fi
+        if [[ -n "$HOST_CONTEXT" ]]; then
+            host_context_default="$HOST_CONTEXT"
+        fi
+        if [[ -n "$host_context_default" ]]; then
+            read -rp "Enter the host Kubernetes context [${host_context_default}]: " input_host_context
+        else
+            read -rp "Enter the host Kubernetes context: " input_host_context
+        fi
+        HOST_CONTEXT="${input_host_context:-$host_context_default}"
+        if [[ -z "$HOST_CONTEXT" ]]; then
+            echo "Error: The host Kubernetes context cannot be empty."
+            exit 1
+        fi
+
+        local host_namespace_default="${HOST_NAMESPACE:-${USER:-$(id -un)}}"
+        read -rp "Enter the host namespace [${host_namespace_default}]: " input_host_namespace
+        HOST_NAMESPACE="${input_host_namespace:-$host_namespace_default}"
+        echo
+    fi
+
+    # Cluster naming
+    local cluster_name_default="${CLUSTER_NAME:-local}"
+    read -rp "Enter the cluster name [${cluster_name_default}]: " input_cluster_name
+    CLUSTER_NAME="${input_cluster_name:-$cluster_name_default}"
+    validate_cluster_name "$CLUSTER_NAME"
+    MINIKUBE_PROFILE="leptostack-${CLUSTER_NAME}"
+
+    # A stored vcluster context name is only valid for the inputs it was
+    # generated from; drop it when they change so the next start/reconnect
+    # records the new one.
+    if [[ "$CLUSTER_NAME" != "$old_cluster_name" || "$HOST_CONTEXT" != "$old_host_context" || "$HOST_NAMESPACE" != "$old_host_namespace" ]]; then
+        VCLUSTER_CONTEXT=""
+    fi
+
+    KUBE_CONTEXT=$(get_context_name)
+
+    local leptostack_name_default="${LEPTOSTACK_NAME:-portal}"
+    read -rp "Enter the LeptoStack name [${leptostack_name_default}]: " input_leptostack_name
+    LEPTOSTACK_NAME="${input_leptostack_name:-$leptostack_name_default}"
+
+    local domain_default="${LEPTOSTACK_DOMAIN:-${USER:-$(id -un)}-leptostack.test}"
+    read -rp "Enter the LeptoStack domain [${domain_default}]: " input_leptostack_domain
+    LEPTOSTACK_DOMAIN="${input_leptostack_domain:-$domain_default}"
+    validate_leptostack_domain "$LEPTOSTACK_DOMAIN"
+    echo
+
+    if [[ "$CLUSTER_PROVIDER" == "vcluster" ]]; then
+        local dns_target_default="${DNS_TARGET_IP:-}"
+        if [[ -n "$dns_target_default" ]]; then
+            read -rp "Enter the DNS target IP (host ingress/LB address reachable from this machine) [${dns_target_default}]: " input_dns_target
+        else
+            read -rp "Enter the DNS target IP (host ingress/LB address reachable from this machine): " input_dns_target
+        fi
+        DNS_TARGET_IP="${input_dns_target:-$dns_target_default}"
+        if [[ -z "$DNS_TARGET_IP" ]]; then
+            echo "Error: The DNS target IP cannot be empty when using vcluster."
+            exit 1
+        fi
+        echo
+    fi
+
+    if [[ "$CLUSTER_PROVIDER" == "minikube" ]]; then
+        configure_minikube_prerequisites
+    fi
 
     # Ask for repository URL
     local repo_url_default=""
@@ -709,7 +1014,8 @@ do_configure() {
     GIT_BRANCH="${input_branch:-$branch_default}"
 
     # Ask for cluster path
-    local cluster_path_default="${CLUSTER_PATH:-clusters/local}"
+    local cluster_path_default="${CLUSTER_PATH:-clusters/${CLUSTER_NAME}}"
+    echo "(The path should end with the cluster name '${CLUSTER_NAME}'.)"
     read -rp "Enter the path to the cluster within the repo [${cluster_path_default}]: " input_cluster_path
     CLUSTER_PATH="${input_cluster_path:-$cluster_path_default}"
 
@@ -812,37 +1118,9 @@ do_configure() {
     fi
     echo
 
-    # Check minikube configuration
-    local current_cpus current_memory
-    current_cpus=$(minikube config get cpus 2>/dev/null || echo "not set")
-    current_memory=$(minikube config get memory 2>/dev/null || echo "not set")
-
-    MINIKUBE_CPUS="${MINIKUBE_CPUS:-8}"
-    MINIKUBE_MEMORY="${MINIKUBE_MEMORY:-24576}"
-
-    echo "Minikube configuration:"
-    echo "  Current CPUs:   $current_cpus"
-    echo "  Current Memory: $current_memory"
-    echo
-    echo "Recommended: cpus=8, memory=24576"
-    echo "Configured:  cpus=${MINIKUBE_CPUS}, memory=${MINIKUBE_MEMORY}"
-
-    if [[ "$current_cpus" != "$MINIKUBE_CPUS" || "$current_memory" != "$MINIKUBE_MEMORY" ]]; then
-        echo
-        read -rp "Minikube will be configured with cpus=${MINIKUBE_CPUS} and memory=${MINIKUBE_MEMORY}. Do you want to modify these values? [y/N]: " modify_config
-        if [[ "$modify_config" =~ ^[Yy]$ ]]; then
-            read -rp "Enter number of CPUs [${MINIKUBE_CPUS}]: " custom_cpus
-            MINIKUBE_CPUS="${custom_cpus:-$MINIKUBE_CPUS}"
-            read -rp "Enter memory in MB [${MINIKUBE_MEMORY}]: " custom_memory
-            MINIKUBE_MEMORY="${custom_memory:-$MINIKUBE_MEMORY}"
-        fi
+    if [[ "$CLUSTER_PROVIDER" == "minikube" ]]; then
+        configure_minikube_resources
     fi
-
-    # Apply minikube config
-    echo
-    echo "Configuring minikube with cpus=$MINIKUBE_CPUS and memory=$MINIKUBE_MEMORY..."
-    minikube config set cpus "$MINIKUBE_CPUS"
-    minikube config set memory "$MINIKUBE_MEMORY"
 
     # Save configuration
     save_config
@@ -854,6 +1132,104 @@ do_configure() {
 }
 
 # --- Start ---
+
+sed_escape_replacement() {
+    # Escapes a value for use as a sed replacement with the / delimiter.
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//&/\\&}"
+    value="${value//\//\\/}"
+    printf '%s' "$value"
+}
+
+validate_cluster_name() {
+    local name="$1"
+    if [[ ! "$name" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || [[ ${#name} -gt 63 ]]; then
+        echo "Error: Invalid cluster name '${name}'. Use lowercase letters, digits and '-' (max 63 characters)."
+        exit 1
+    fi
+}
+
+validate_leptostack_domain() {
+    local domain="$1"
+    if [[ ! "$domain" =~ ^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$ ]]; then
+        echo "Error: Invalid LeptoStack domain '${domain}'. Use letters, digits, '.', '_' and '-'."
+        exit 1
+    fi
+}
+
+require_vcluster_host() {
+    if [[ -z "$HOST_CONTEXT" || -z "$HOST_NAMESPACE" ]]; then
+        echo "Error: HOST_CONTEXT and HOST_NAMESPACE must be set for vcluster operations."
+        echo "Please re-run '$0 configure' and choose the vcluster provider."
+        exit 1
+    fi
+    if ! kubectl config get-contexts -o name 2>/dev/null | grep -qx "$HOST_CONTEXT"; then
+        echo "Error: Host Kubernetes context '${HOST_CONTEXT}' was not found."
+        echo "Please check 'kubectl config get-contexts' and re-run '$0 configure'."
+        exit 1
+    fi
+}
+
+write_vcluster_values() {
+    local dest="$1"
+    # The template uses literal placeholders so the quoted heredoc is not
+    # expanded; the domain is escaped for use inside a CoreDNS regex.
+    local domain_regex sed_domain_regex sed_cluster_name
+    domain_regex="${LEPTOSTACK_DOMAIN//./\\.}"
+    sed_domain_regex=$(sed_escape_replacement "$domain_regex")
+    sed_cluster_name=$(sed_escape_replacement "$CLUSTER_NAME")
+
+    cat > "$dest" <<'VCLUSTER_VALUES'
+controlPlane:
+  statefulSet:
+    resources:
+      requests:
+        cpu: "2"
+        memory: "4Gi"
+      limits:
+        cpu: "4"
+        memory: "8Gi"
+        ephemeral-storage: "20Gi"
+  coredns:
+    overwriteConfig: |-
+      .:1053 {
+          errors
+          health
+          ready
+
+          rewrite name regex .*\.nodes\.vcluster\.com kubernetes.default.svc.cluster.local
+
+          rewrite name regex ^((.*)\.)?api\.__CLUSTER_NAME__\.internal\.$ apisix-internal-gateway.ingress-__CLUSTER_NAME__-internal.svc.cluster.local answer auto
+          rewrite name regex ^(.+\.)?__LEPTOSTACK_DOMAIN_REGEX__\.$ apisix-gateway.ingress-__CLUSTER_NAME__.svc.cluster.local answer auto
+
+          kubernetes cluster.local in-addr.arpa ip6.arpa {
+              pods insecure
+              fallthrough in-addr.arpa ip6.arpa
+          }
+
+          hosts /etc/coredns/NodeHosts {
+              ttl 60
+              reload 15s
+              fallthrough
+          }
+
+          prometheus :9153
+          forward . /etc/resolv.conf
+          cache 30
+          loop
+          reload
+          loadbalance
+      }
+
+      import /etc/coredns/custom/*.server
+VCLUSTER_VALUES
+
+    sed -i \
+        -e "s/__CLUSTER_NAME__/${sed_cluster_name}/g" \
+        -e "s/__LEPTOSTACK_DOMAIN_REGEX__/${sed_domain_regex}/g" \
+        "$dest"
+}
 
 run_flux_bootstrap() {
     local resync="${1:-}"
@@ -880,7 +1256,7 @@ run_flux_bootstrap() {
 
     case "$GIT_SERVER" in
         github)
-            flux --context minikube bootstrap github \
+            flux --context "${KUBE_CONTEXT}" bootstrap github \
                 --token-auth \
                 --components-extra=image-reflector-controller,image-automation-controller \
                 --owner="$GIT_OWNER" \
@@ -890,7 +1266,7 @@ run_flux_bootstrap() {
                 --personal
             ;;
         gitea)
-            flux --context minikube bootstrap gitea \
+            flux --context "${KUBE_CONTEXT}" bootstrap gitea \
                 --token-auth \
                 --components-extra=image-reflector-controller,image-automation-controller \
                 --hostname="$GIT_HOSTNAME" \
@@ -901,7 +1277,7 @@ run_flux_bootstrap() {
                 --personal
             ;;
         gitlab)
-            flux --context minikube bootstrap gitlab \
+            flux --context "${KUBE_CONTEXT}" bootstrap gitlab \
                 --token-auth \
                 --components-extra=image-reflector-controller,image-automation-controller \
                 --hostname="$GIT_HOSTNAME" \
@@ -918,6 +1294,113 @@ run_flux_bootstrap() {
     echo "  flux get kustomizations"
 }
 
+start_minikube() {
+    echo "Starting minikube (profile ${MINIKUBE_PROFILE})..."
+    minikube start -p "${MINIKUBE_PROFILE}" --cni=calico --insecure-registry="registry.${LEPTOSTACK_DOMAIN}"
+    echo
+
+    echo "Enabling minikube addons..."
+    local enabled_addons
+    enabled_addons=$(minikube -p "${MINIKUBE_PROFILE}" addons list --output=json 2>/dev/null)
+    for addon in metallb registry metrics-server; do
+        if echo "$enabled_addons" | grep -q "\"$addon\":{\"Profile\":\"${MINIKUBE_PROFILE}\",\"Status\":\"enabled\""; then
+            echo "  $addon already enabled, skipping."
+        else
+            minikube -p "${MINIKUBE_PROFILE}" addons enable "$addon"
+        fi
+    done
+    echo
+}
+
+adopt_vcluster_context() {
+    # Must only be called right after `vcluster create`/`connect`, where
+    # vcluster has just switched the current context to the name it generated
+    # (vcluster_<name>_<namespace>_<host-context>). Adopt and report it, falling
+    # back to the derived name otherwise.
+    local connected_context
+    connected_context=$(kubectl config current-context 2>/dev/null || echo "")
+    if [[ -n "$connected_context" && "$connected_context" != "$HOST_CONTEXT" ]]; then
+        KUBE_CONTEXT="$connected_context"
+    fi
+
+    if kubectl config get-contexts -o name 2>/dev/null | grep -qx "$KUBE_CONTEXT"; then
+        kubectl config use-context "$KUBE_CONTEXT" >/dev/null
+        # Record the actual name so future invocations do not depend on the
+        # vcluster naming convention.
+        update_config_value VCLUSTER_CONTEXT "$KUBE_CONTEXT"
+        echo "  vcluster context: ${KUBE_CONTEXT}"
+    else
+        echo "Warning: Could not find a vcluster context. Run '$0 reconnect' to refresh the connection."
+    fi
+}
+
+connect_vcluster() {
+    # `--kube-config-context-name` is deprecated on `vcluster connect`; let
+    # vcluster generate the context name itself and then select it.
+    vcluster connect "$CLUSTER_NAME" \
+        --namespace "$HOST_NAMESPACE" \
+        --context "$HOST_CONTEXT"
+
+    adopt_vcluster_context
+}
+
+reconnect_vcluster() {
+    # Recreate the vcluster kubeconfig/proxy connection. The proxy can be lost
+    # after a reboot or a period of inactivity, in which case re-running
+    # `vcluster connect` restores it.
+    require_vcluster_host
+
+    echo "Connecting to vcluster ${CLUSTER_NAME} in namespace ${HOST_NAMESPACE} on context ${HOST_CONTEXT}..."
+    connect_vcluster
+}
+
+start_vcluster_cluster() {
+    require_vcluster_host
+
+    local values_file
+    values_file=$(mktemp /tmp/leptostack-vcluster-XXXXXX.yaml)
+
+    local exists=""
+    if kubectl --context "$HOST_CONTEXT" -n "$HOST_NAMESPACE" get statefulset \
+        -l "app=vcluster,release=${CLUSTER_NAME}" -o name 2>/dev/null | grep -q .; then
+        exists="true"
+    fi
+
+    if [[ -n "$exists" ]]; then
+        echo "Resuming vcluster ${CLUSTER_NAME}..."
+        # Resuming an already-running vcluster is a no-op that reports an error;
+        # ignore it so re-running `start` stays idempotent.
+        vcluster resume "$CLUSTER_NAME" \
+            --namespace "$HOST_NAMESPACE" \
+            --context "$HOST_CONTEXT" || true
+
+        if kubectl config get-contexts -o name 2>/dev/null | grep -qx "$KUBE_CONTEXT"; then
+            kubectl config use-context "$KUBE_CONTEXT" >/dev/null
+            update_config_value VCLUSTER_CONTEXT "$KUBE_CONTEXT"
+            echo "  vcluster context: ${KUBE_CONTEXT}"
+        else
+            connect_vcluster
+        fi
+    else
+        echo "Creating vcluster ${CLUSTER_NAME} in namespace ${HOST_NAMESPACE} on context ${HOST_CONTEXT}..."
+        write_vcluster_values "$values_file"
+        # Drop a stale context with the same generated name so `vcluster create`
+        # does not prompt.
+        kubectl config delete-context "$KUBE_CONTEXT" >/dev/null 2>&1 || true
+        if ! vcluster create "$CLUSTER_NAME" \
+            --namespace "$HOST_NAMESPACE" \
+            --context "$HOST_CONTEXT" \
+            --values "$values_file"; then
+            rm -f "$values_file"
+            echo "Error: Failed to create vcluster ${CLUSTER_NAME}."
+            exit 1
+        fi
+        adopt_vcluster_context
+    fi
+    rm -f "$values_file"
+    echo
+}
+
 do_start() {
     local resync="${1:-}"
 
@@ -926,28 +1409,17 @@ do_start() {
     echo "=== Starting LeptoStack Development Environment ==="
     echo
 
-    # Start minikube
-    echo "Starting minikube..."
-    minikube start --cni=calico --insecure-registry="registry.minikube.test"
-    echo
+    if [[ "$CLUSTER_PROVIDER" == "vcluster" ]]; then
+        start_vcluster_cluster
+    else
+        start_minikube
+    fi
 
-    echo "Enabling minikube addons..."
-    local enabled_addons
-    enabled_addons=$(minikube addons list --output=json 2>/dev/null)
-    for addon in metallb registry metrics-server; do
-        if echo "$enabled_addons" | grep -q "\"$addon\":{\"Profile\":\"minikube\",\"Status\":\"enabled\""; then
-            echo "  $addon already enabled, skipping."
-        else
-            minikube addons enable "$addon"
-        fi
-    done
-    echo
-
-    # Verify kubectl context is minikube before running flux
+    # Verify kubectl context before running flux
     check_kubectl_context
 
     # Check if flux is already bootstrapped
-    if kubectl --context minikube -n flux-system get deployment source-controller &>/dev/null; then
+    if kubectl --context "${KUBE_CONTEXT}" -n flux-system get deployment source-controller &>/dev/null; then
         echo "Flux is already bootstrapped, skipping bootstrap."
         echo "You can check the status of the deployment by running:"
         echo "  flux get kustomizations"
@@ -959,11 +1431,11 @@ do_start() {
     # Create leptostack-base secret in flux-system namespace
     echo
     echo "Creating leptostack-base secret in flux-system namespace..."
-    if kubectl --context minikube -n flux-system get secret leptostack-base &>/dev/null; then
+    if kubectl --context "${KUBE_CONTEXT}" -n flux-system get secret leptostack-base &>/dev/null; then
         echo "  Secret leptostack-base already exists, updating..."
-        kubectl --context minikube -n flux-system delete secret leptostack-base
+        kubectl --context "${KUBE_CONTEXT}" -n flux-system delete secret leptostack-base
     fi
-    kubectl --context minikube -n flux-system create secret generic leptostack-base \
+    kubectl --context "${KUBE_CONTEXT}" -n flux-system create secret generic leptostack-base \
         --from-literal=username=git \
         --from-literal=password="$RESOURCES_GIT_PAT"
     echo "  Secret leptostack-base created successfully."
@@ -977,7 +1449,13 @@ do_rebootstrap() {
     echo "=== Re-running LeptoStack Flux Bootstrap ==="
     echo
 
-    if ! minikube status &>/dev/null; then
+    if [[ "$CLUSTER_PROVIDER" == "vcluster" ]]; then
+        if ! kubectl --context "${KUBE_CONTEXT}" get --raw /healthz &>/dev/null; then
+            echo "Error: The vcluster (${CLUSTER_NAME}) is not reachable."
+            echo "Please start it with: $0 start"
+            exit 1
+        fi
+    elif ! minikube status -p "${MINIKUBE_PROFILE}" &>/dev/null; then
         echo "Error: Minikube is not running."
         echo "Please start it with: $0 start"
         exit 1
@@ -997,20 +1475,27 @@ do_status() {
 
     check_kubectl_context
 
-    echo "Minikube status:"
-    if ! minikube status; then
+    if [[ "$CLUSTER_PROVIDER" == "vcluster" ]]; then
+        require_vcluster_host
+        echo "vcluster status:"
+        vcluster list --context "$HOST_CONTEXT" --namespace "$HOST_NAMESPACE" 2>/dev/null || true
         echo
-        echo "Minikube is not running. Start it with: $0 start"
-        return
+    else
+        echo "Minikube status:"
+        if ! minikube status -p "${MINIKUBE_PROFILE}"; then
+            echo
+            echo "Minikube is not running. Start it with: $0 start"
+            return
+        fi
+        echo
     fi
-    echo
 
     echo "Flux version:"
-    flux --context minikube version || true
+    flux --context "${KUBE_CONTEXT}" version || true
     echo
 
     echo "Flux kustomizations:"
-    flux --context minikube get kustomizations || true
+    flux --context "${KUBE_CONTEXT}" get kustomizations || true
 }
 
 # --- Stop ---
@@ -1018,9 +1503,18 @@ do_status() {
 do_stop() {
     load_config
 
-    echo "Stopping minikube..."
-    minikube stop
-    echo "Minikube stopped."
+    if [[ "$CLUSTER_PROVIDER" == "vcluster" ]]; then
+        require_vcluster_host
+        echo "Pausing vcluster ${CLUSTER_NAME}..."
+        vcluster pause "$CLUSTER_NAME" \
+            --namespace "$HOST_NAMESPACE" \
+            --context "$HOST_CONTEXT"
+        echo "vcluster paused."
+    else
+        echo "Stopping minikube..."
+        minikube stop -p "${MINIKUBE_PROFILE}"
+        echo "Minikube stopped."
+    fi
 }
 
 # --- Restart ---
@@ -1028,10 +1522,7 @@ do_stop() {
 do_restart() {
     load_config
 
-    echo "Stopping minikube..."
-    minikube stop
-    echo "Minikube stopped."
-
+    do_stop
     do_start
 }
 
@@ -1040,17 +1531,51 @@ do_restart() {
 do_reset() {
     load_config
 
-    read -rp "This will delete the minikube cluster and recreate it. Are you sure? [y/N]: " confirm
+    if [[ "$CLUSTER_PROVIDER" == "vcluster" ]]; then
+        read -rp "This will delete the vcluster '${CLUSTER_NAME}' and recreate it. Are you sure? [y/N]: " confirm
+    else
+        read -rp "This will delete the minikube cluster and recreate it. Are you sure? [y/N]: " confirm
+    fi
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
         echo "Aborted."
         exit 0
     fi
 
-    echo "Deleting minikube cluster..."
-    minikube delete
-    echo
+    if [[ "$CLUSTER_PROVIDER" == "vcluster" ]]; then
+        require_vcluster_host
+        echo "Deleting vcluster ${CLUSTER_NAME}..."
+        vcluster delete "$CLUSTER_NAME" \
+            --namespace "$HOST_NAMESPACE" \
+            --context "$HOST_CONTEXT"
+        kubectl config delete-context "$KUBE_CONTEXT" >/dev/null 2>&1 || true
+        echo
+    else
+        echo "Deleting minikube cluster..."
+        minikube delete -p "${MINIKUBE_PROFILE}"
+        echo
+    fi
 
     do_start resync
+}
+
+# --- Reconnect (vcluster) ---
+
+do_reconnect() {
+    load_config
+
+    if [[ "$CLUSTER_PROVIDER" != "vcluster" ]]; then
+        echo "Error: The reconnect command is only available for the vcluster provider (current: ${CLUSTER_PROVIDER})."
+        exit 1
+    fi
+
+    echo "=== Reconnecting to vcluster ${CLUSTER_NAME} ==="
+    echo
+
+    reconnect_vcluster
+
+    echo
+    echo "Reconnected to vcluster ${CLUSTER_NAME}."
+    echo "Check the status with: $0 status"
 }
 
 # --- Reconcile ---
@@ -1058,16 +1583,16 @@ do_reset() {
 do_reconcile() {
     check_kubectl_context
     echo "Reconciling flux-system..."
-    flux --context minikube reconcile kustomization flux-system --with-source
+    flux --context "${KUBE_CONTEXT}" reconcile kustomization flux-system --with-source
     echo "Reconciling leptostack-base source..."
-    flux --context minikube reconcile source git leptostack-base
+    flux --context "${KUBE_CONTEXT}" reconcile source git leptostack-base
 }
 
 # --- Events ---
 
 do_events() {
     check_kubectl_context
-    kubectl --context minikube events -A -w
+    kubectl --context "${KUBE_CONTEXT}" events -A -w
 }
 
 check_kustomization_ready() {
@@ -1077,7 +1602,7 @@ check_kustomization_ready() {
     local name="$1"
     local output
     echo "Checking if the ${name} Kustomization is ready..."
-    if ! output=$(flux --context minikube get kustomization "$name" --status-selector ready=false --no-header 2>&1); then
+    if ! output=$(flux --context "${KUBE_CONTEXT}" get kustomization "$name" --status-selector ready=false --no-header 2>&1); then
         echo "Error: The ${name} Kustomization is not available."
         echo "  $output"
         echo "Run '$0 status' to check progress."
@@ -1095,6 +1620,7 @@ check_kustomization_ready() {
 # --- Update DNS ---
 
 do_update_dns() {
+    load_config
     check_kubectl_context
 
     # Check if NetworkManager is running with dnsmasq plugin
@@ -1130,19 +1656,42 @@ do_update_dns() {
     fi
 
     echo "NetworkManager dnsmasq plugin detected."
-    echo "Configuring DNS for minikube..."
-    local minikube_ip subnet lb_ip
-    minikube_ip=$(minikube ip)
-    subnet=$(echo "$minikube_ip" | cut -d'.' -f1-3)
-    lb_ip="${subnet}.100"
-    echo "address=/test/${lb_ip}" | sudo tee /etc/NetworkManager/dnsmasq.d/minikube.conf > /dev/null
+    echo "Configuring DNS for ${LEPTOSTACK_DOMAIN}..."
+
+    local target_ip=""
+    if [[ "$CLUSTER_PROVIDER" == "vcluster" ]]; then
+        # The apisix gateway is exposed as a LoadBalancer inside the vcluster;
+        # the host ingress assigns its address, which is what the domain must
+        # resolve to.
+        target_ip=$(kubectl --context "${KUBE_CONTEXT}" -n "ingress-${CLUSTER_NAME}" get service apisix-gateway \
+            -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+        if [[ -z "$target_ip" ]]; then
+            target_ip="$DNS_TARGET_IP"
+            if [[ -n "$target_ip" ]]; then
+                echo "Warning: Could not read the apisix-gateway load balancer IP; falling back to DNS_TARGET_IP (${target_ip})."
+            fi
+        fi
+    else
+        local minikube_ip subnet
+        minikube_ip=$(minikube ip -p "${MINIKUBE_PROFILE}")
+        subnet=$(echo "$minikube_ip" | cut -d'.' -f1-3)
+        target_ip="${subnet}.100"
+    fi
+
+    if [[ -z "$target_ip" ]]; then
+        echo "Error: No DNS target address is configured. Re-run '$0 configure'."
+        exit 1
+    fi
+
+    echo "address=/${LEPTOSTACK_DOMAIN}/${target_ip}" | sudo tee "/etc/NetworkManager/dnsmasq.d/leptostack-${CLUSTER_NAME}.conf" > /dev/null
     sudo systemctl restart NetworkManager
-    echo "DNS configuration updated. *.test domains now resolve to ${lb_ip}."
+    echo "DNS configuration updated. *.${LEPTOSTACK_DOMAIN} domains now resolve to ${target_ip}."
 }
 
 # --- Add Trust ---
 
 do_add_trust() {
+    load_config
     check_kubectl_context
 
     check_kustomization_ready "infra-config"
@@ -1151,7 +1700,7 @@ do_add_trust() {
     local tmp_ca
     tmp_ca=$(mktemp /tmp/leptostack-ca-XXXXXX.crt)
     echo "Extracting CA certificate from cert-manager/internal-ca-secret..."
-    kubectl --context minikube get secret internal-ca-secret -n cert-manager -o jsonpath='{.data.ca\.crt}' | base64 -d > "$tmp_ca"
+    kubectl --context "${KUBE_CONTEXT}" get secret internal-ca-secret -n cert-manager -o jsonpath='{.data.ca\.crt}' | base64 -d > "$tmp_ca"
 
     if [[ ! -s "$tmp_ca" ]]; then
         echo "Error: Failed to extract CA certificate from secret cert-manager/internal-ca-secret."
@@ -1167,8 +1716,8 @@ do_add_trust() {
             sudo trust anchor --store "$tmp_ca"
             ;;
         fedora)
-            sudo cp "$tmp_ca" /etc/pki/ca-trust/source/anchors/minikube.test.crt
-            sudo chmod 644 /etc/pki/ca-trust/source/anchors/minikube.test.crt
+            sudo cp "$tmp_ca" "/etc/pki/ca-trust/source/anchors/${LEPTOSTACK_DOMAIN}.crt"
+            sudo chmod 644 "/etc/pki/ca-trust/source/anchors/${LEPTOSTACK_DOMAIN}.crt"
             sudo update-ca-trust
             ;;
     esac
@@ -1187,24 +1736,24 @@ print_port_forward_credentials() {
     case "$service" in
         openbao)
             echo "OpenBao root token:"
-            kubectl --context minikube -n local-openbao get secrets openbao-init -o json | jq -r '.data.root_token | @base64d'
+            kubectl --context "${KUBE_CONTEXT}" -n "${CLUSTER_NAME}-openbao" get secrets openbao-init -o json | jq -r '.data.root_token | @base64d'
             echo
             ;;
         rabbitmq)
             echo "RabbitMQ credentials:"
-            echo "  Username: $(kubectl --context minikube -n local-rabbitmq get secret portal-rabbitmq-default-user -o jsonpath='{.data.username}' | base64 -d)"
-            echo "  Password: $(kubectl --context minikube -n local-rabbitmq get secret portal-rabbitmq-default-user -o jsonpath='{.data.password}' | base64 -d)"
+            echo "  Username: $(kubectl --context "${KUBE_CONTEXT}" -n "${CLUSTER_NAME}-rabbitmq" get secret "${LEPTOSTACK_NAME}-rabbitmq-default-user" -o jsonpath='{.data.username}' | base64 -d)"
+            echo "  Password: $(kubectl --context "${KUBE_CONTEXT}" -n "${CLUSTER_NAME}-rabbitmq" get secret "${LEPTOSTACK_NAME}-rabbitmq-default-user" -o jsonpath='{.data.password}' | base64 -d)"
             echo
             ;;
         postgres)
             echo "PostgreSQL superuser credentials:"
-            echo "  Username: $(kubectl --context minikube -n local-pgcluster get secret local-pgcluster-superuser -o jsonpath='{.data.username}' | base64 -d)"
-            echo "  Password: $(kubectl --context minikube -n local-pgcluster get secret local-pgcluster-superuser -o jsonpath='{.data.password}' | base64 -d)"
+            echo "  Username: $(kubectl --context "${KUBE_CONTEXT}" -n "${CLUSTER_NAME}-pgcluster" get secret "${CLUSTER_NAME}-pgcluster-superuser" -o jsonpath='{.data.username}' | base64 -d)"
+            echo "  Password: $(kubectl --context "${KUBE_CONTEXT}" -n "${CLUSTER_NAME}-pgcluster" get secret "${CLUSTER_NAME}-pgcluster-superuser" -o jsonpath='{.data.password}' | base64 -d)"
             echo
             ;;
         valkey)
             echo "Valkey credentials:"
-            echo "  Password: $(kubectl --context minikube -n local-valkey get secret valkey-admin -o jsonpath='{.data.password}' | base64 -d)"
+            echo "  Password: $(kubectl --context "${KUBE_CONTEXT}" -n "${CLUSTER_NAME}-valkey" get secret valkey-admin -o jsonpath='{.data.password}' | base64 -d)"
             echo
             ;;
     esac
@@ -1259,28 +1808,32 @@ exec_port_forward() {
 
     case "$service" in
         openbao)
-            exec kubectl --context minikube -n local-openbao port-forward services/local-openbao-openbao 8200:8200
+            exec kubectl --context "${KUBE_CONTEXT}" -n "${CLUSTER_NAME}-openbao" port-forward "services/${CLUSTER_NAME}-openbao-openbao" 8200:8200
             ;;
         rabbitmq)
-            exec kubectl --context minikube -n local-rabbitmq port-forward services/portal-rabbitmq 15671:15671
+            exec kubectl --context "${KUBE_CONTEXT}" -n "${CLUSTER_NAME}-rabbitmq" port-forward "services/${LEPTOSTACK_NAME}-rabbitmq" 15671:15671
             ;;
         postgres)
-            exec kubectl --context minikube -n local-pgcluster port-forward services/local-pgcluster-rw 5432:5432
+            exec kubectl --context "${KUBE_CONTEXT}" -n "${CLUSTER_NAME}-pgcluster" port-forward "services/${CLUSTER_NAME}-pgcluster-rw" 5432:5432
             ;;
         valkey)
-            exec kubectl --context minikube -n local-valkey port-forward services/valkey-portal-valkey 6379:6379
+            exec kubectl --context "${KUBE_CONTEXT}" -n "${CLUSTER_NAME}-valkey" port-forward "services/valkey-${LEPTOSTACK_NAME}-valkey" 6379:6379
             ;;
         flowable)
-            exec kubectl --context minikube -n local-flowable port-forward services/flowable-rest 8080:8080
+            exec kubectl --context "${KUBE_CONTEXT}" -n "${CLUSTER_NAME}-flowable" port-forward services/flowable-rest 8080:8080
             ;;
         greenmail)
-            exec kubectl --context minikube -n greenmail port-forward services/api 8025:80
+            exec kubectl --context "${KUBE_CONTEXT}" -n greenmail port-forward services/api 8025:80
             ;;
     esac
 }
 
 run_port_forward() {
     local service="$1" start_time
+
+    # The port-forward runs in a fresh process, so it must load the config to
+    # resolve the context and the namespaced service names.
+    load_config
 
     mkdir -p "$PORT_FORWARD_STATE_DIR"
     start_time=$(process_start_time "$$")
@@ -1387,7 +1940,7 @@ _leptostack() {
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-    commands="configure start stop restart status reset rebootstrap reconcile events update-dns add-trust port-forward completion version"
+    commands="configure start stop restart status reset reconnect rebootstrap reconcile events update-dns add-trust port-forward completion get-context version"
     port_forward_services="all stop openbao rabbitmq postgres valkey flowable greenmail"
 
     if [[ ${COMP_CWORD} -eq 1 ]]; then
@@ -1422,10 +1975,12 @@ _leptostack() {
         'restart:Stop and restart LeptoStack'
         'status:Check LeptoStack status'
         'reset:Delete LeptoStack cluster and restart'
+        'reconnect:Reconnect to the vcluster (vcluster provider only)'
+        'get-context:Print the kubectl context name for the configured cluster'
         'rebootstrap:Re-run the Flux bootstrap to add/update Flux components'
         'reconcile:Reconcile flux-system kustomization'
         'events:Watch all cluster events'
-        'update-dns:Configure local DNS to resolve *.test via minikube'
+        'update-dns:Configure local DNS for the LeptoStack domain'
         'add-trust:Add the internal CA certificate to system trust store'
         'port-forward:Port-forward a service in the background'
         'completion:Generate shell completion script'
@@ -1472,6 +2027,14 @@ ZSH_COMPLETION
     esac
 }
 
+# --- Get Context ---
+
+do_get_context() {
+    load_config
+    # Print only the context name so it can be used in command substitution.
+    get_context_name
+}
+
 # --- Version ---
 
 do_version() {
@@ -1481,7 +2044,7 @@ do_version() {
 # --- Main ---
 
 usage() {
-    echo "Usage: $0 {configure|start|stop|restart|status|reset|rebootstrap|reconcile|events|update-dns|add-trust|port-forward|completion|version}"
+    echo "Usage: $0 {configure|start|stop|restart|status|reset|reconnect|rebootstrap|reconcile|events|update-dns|add-trust|port-forward|completion|get-context|version}"
     echo
     echo "Commands:"
     echo "  configure      Set up the development environment configuration"
@@ -1490,13 +2053,15 @@ usage() {
     echo "  restart        Stop and restart LeptoStack"
     echo "  status         Check LeptoStack status"
     echo "  reset          Delete LeptoStack cluster and restart"
+    echo "  reconnect      Reconnect to the vcluster (vcluster provider only)"
     echo "  rebootstrap    Re-run the Flux bootstrap to add/update Flux components"
     echo "  reconcile      Reconcile flux-system kustomization"
     echo "  events         Watch all cluster events"
-    echo "  update-dns     Configure local DNS to resolve *.test via minikube"
+    echo "  update-dns     Configure local DNS for the LeptoStack domain"
     echo "  add-trust      Add the internal CA certificate to system trust store"
     echo "  port-forward   Port-forward a service in the background (all, stop, openbao, rabbitmq, postgres, valkey, flowable, greenmail)"
     echo "  completion     Generate shell completion script (zsh, bash)"
+    echo "  get-context    Print the kubectl context name for the configured cluster"
     echo "  version        Show the leptostack version"
     exit 1
 }
@@ -1523,6 +2088,7 @@ case "$1" in
     restart)       do_restart ;;
     status)        do_status ;;
     reset)         do_reset ;;
+    reconnect)     do_reconnect ;;
     rebootstrap)   do_rebootstrap ;;
     reconcile)     do_reconcile ;;
     events)        do_events ;;
@@ -1549,6 +2115,7 @@ case "$1" in
         fi
         run_port_forward "$2"
         ;;
+    get-context)   do_get_context ;;
     version)       do_version ;;
     *)             usage ;;
 esac
