@@ -562,6 +562,9 @@ load_config() {
     HOST_CONTEXT="${HOST_CONTEXT:-}"
     HOST_NAMESPACE="${HOST_NAMESPACE:-${USER:-$(id -un)}}"
     DNS_TARGET_IP="${DNS_TARGET_IP:-}"
+    MODULE_REGISTRY_MODULES="${MODULE_REGISTRY_MODULES:-}"
+    MODULE_REGISTRY_REPOSITORY="${MODULE_REGISTRY_REPOSITORY:-}"
+    MODULE_REGISTRY_CREDENTIALS="${MODULE_REGISTRY_CREDENTIALS:-}"
 
     MINIKUBE_PROFILE="leptostack-${CLUSTER_NAME}"
     VCLUSTER_CONTEXT="${VCLUSTER_CONTEXT:-}"
@@ -582,6 +585,9 @@ save_config() {
     VCLUSTER_CONTEXT="${VCLUSTER_CONTEXT:-}"
     MINIKUBE_CPUS="${MINIKUBE_CPUS:-8}"
     MINIKUBE_MEMORY="${MINIKUBE_MEMORY:-24576}"
+    MODULE_REGISTRY_MODULES="${MODULE_REGISTRY_MODULES:-}"
+    MODULE_REGISTRY_REPOSITORY="${MODULE_REGISTRY_REPOSITORY:-ghcr.io}"
+    MODULE_REGISTRY_CREDENTIALS="${MODULE_REGISTRY_CREDENTIALS:-}"
     cat > "$CONFIG_FILE" <<EOF
 GIT_SERVER="${GIT_SERVER}"
 GIT_PAT="${GIT_PAT}"
@@ -603,6 +609,9 @@ MINIKUBE_MEMORY="${MINIKUBE_MEMORY}"
 RESOURCES_GIT_PAT="${RESOURCES_GIT_PAT}"
 TEMPLATE_GIT_URL="${TEMPLATE_GIT_URL}"
 TEMPLATE_GIT_BRANCH="${TEMPLATE_GIT_BRANCH}"
+MODULE_REGISTRY_MODULES="${MODULE_REGISTRY_MODULES}"
+MODULE_REGISTRY_REPOSITORY="${MODULE_REGISTRY_REPOSITORY}"
+MODULE_REGISTRY_CREDENTIALS="${MODULE_REGISTRY_CREDENTIALS}"
 EOF
     chmod 600 "$CONFIG_FILE"
 }
@@ -1084,6 +1093,49 @@ do_configure() {
     fi
     echo
 
+    local registry_modules_default="${MODULE_REGISTRY_MODULES:-module-core}"
+    read -rp "Enter the module(s) to store registry credentials for, comma-separated [${registry_modules_default}]: " input_registry_modules
+    MODULE_REGISTRY_MODULES="${input_registry_modules:-$registry_modules_default}"
+    MODULE_REGISTRY_MODULES="${MODULE_REGISTRY_MODULES//,/ }"
+    local -a registry_modules
+    read -ra registry_modules <<< "$MODULE_REGISTRY_MODULES"
+    if [[ ${#registry_modules[@]} -eq 0 ]]; then
+        echo "Error: At least one module name is required."
+        exit 1
+    fi
+    local module
+    for module in "${registry_modules[@]}"; do
+        validate_module_name "$module"
+    done
+    MODULE_REGISTRY_MODULES="${registry_modules[*]}"
+    echo "  Modules: ${MODULE_REGISTRY_MODULES}"
+    echo
+
+    local registry_repository_default="${MODULE_REGISTRY_REPOSITORY:-ghcr.io}"
+    read -rp "Enter the container registry repository [${registry_repository_default}]: " input_registry_repository
+    MODULE_REGISTRY_REPOSITORY="${input_registry_repository:-$registry_repository_default}"
+    echo
+
+    local input_registry_credentials=""
+    if [[ -n "${MODULE_REGISTRY_CREDENTIALS:-}" ]]; then
+        echo -n "Enter the registry credentials (user:pass) [leave empty to keep the existing value]: "
+    else
+        echo -n "Enter the registry credentials (user:pass): "
+    fi
+    read_masked_secret input_registry_credentials
+    if [[ -n "$input_registry_credentials" ]]; then
+        MODULE_REGISTRY_CREDENTIALS="$input_registry_credentials"
+    fi
+    if [[ -z "${MODULE_REGISTRY_CREDENTIALS:-}" ]]; then
+        echo "Error: Registry credentials (user:pass) cannot be empty."
+        exit 1
+    fi
+    if [[ "$MODULE_REGISTRY_CREDENTIALS" != *:* ]]; then
+        echo "Error: Registry credentials must be in the format user:pass."
+        exit 1
+    fi
+    echo
+
     # Validate repository accessibility with PAT
     echo "Validating repository access..."
     local api_url http_code
@@ -1154,6 +1206,14 @@ validate_leptostack_domain() {
     local domain="$1"
     if [[ ! "$domain" =~ ^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$ ]]; then
         echo "Error: Invalid LeptoStack domain '${domain}'. Use letters, digits, '.', '_' and '-'."
+        exit 1
+    fi
+}
+
+validate_module_name() {
+    local name="$1"
+    if [[ ! "$name" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || [[ ${#name} -gt 63 ]]; then
+        echo "Error: Invalid module name '${name}'. Use lowercase letters, digits and '-' (max 63 characters)."
         exit 1
     fi
 }
@@ -1334,6 +1394,12 @@ adopt_vcluster_context() {
     fi
 }
 
+disconnect_vcluster() {
+    # `--kube-config-context-name` is deprecated on `vcluster connect`; let
+    # vcluster generate the context name itself and then select it.
+    kubectl config use-context "$HOST_CONTEXT"
+}
+
 connect_vcluster() {
     # `--kube-config-context-name` is deprecated on `vcluster connect`; let
     # vcluster generate the context name itself and then select it.
@@ -1350,6 +1416,7 @@ reconnect_vcluster() {
     # `vcluster connect` restores it.
     require_vcluster_host
 
+    disconnect_vcluster
     echo "Connecting to vcluster ${CLUSTER_NAME} in namespace ${HOST_NAMESPACE} on context ${HOST_CONTEXT}..."
     connect_vcluster
 }
@@ -1401,6 +1468,184 @@ start_vcluster_cluster() {
     echo
 }
 
+kustomization_ready() {
+    local name="$1" ready
+    ready=$(kubectl --context "${KUBE_CONTEXT}" -n flux-system get kustomization "$name" \
+        -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null) || true
+    [[ "$ready" == "True" ]]
+}
+
+wait_for_kustomization_ready() {
+    local name="$1" timeout="${2:-1800}" interval=10 waited=0
+    echo "Waiting for the ${name} Kustomization to become ready..."
+    while ! kustomization_ready "$name"; do
+        if (( waited >= timeout )); then
+            echo "Error: Timed out after ${timeout}s waiting for the ${name} Kustomization to become ready."
+            echo "Run '$0 status' to check progress."
+            exit 1
+        fi
+        sleep "$interval"
+        waited=$((waited + interval))
+        if (( waited % 60 == 0 )); then
+            echo "  Still waiting for ${name}... (${waited}s)"
+        fi
+    done
+    echo "The ${name} Kustomization is ready."
+    echo
+}
+
+delete_openbao_registry_resources() {
+    kubectl --context "${KUBE_CONTEXT}" -n "$1" delete job "$2" --ignore-not-found >/dev/null 2>&1 || true
+    kubectl --context "${KUBE_CONTEXT}" -n "$1" delete secret "$3" --ignore-not-found >/dev/null 2>&1 || true
+}
+
+run_openbao_registry_job() {
+    local modules=("$@")
+    local namespace="${CLUSTER_NAME}-openbao"
+    local service="${CLUSTER_NAME}-openbao-openbao"
+    local job_name="leptostack-registry-credentials"
+    local secret_name="leptostack-registry-credentials"
+    local module module_args="" yaml_repository yaml_credentials
+
+    yaml_repository=$(printf '%s' "$MODULE_REGISTRY_REPOSITORY" | sed 's/\\/\\\\/g; s/"/\\"/g')
+    yaml_credentials=$(printf '%s' "$MODULE_REGISTRY_CREDENTIALS" | sed 's/\\/\\\\/g; s/"/\\"/g')
+
+    for module in "${modules[@]}"; do
+        module_args+="            - ${module}"$'\n'
+    done
+
+    local secret_manifest
+    secret_manifest=$(cat <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ${secret_name}
+  namespace: ${namespace}
+  labels:
+    app.kubernetes.io/name: leptostack-registry-credentials
+type: Opaque
+stringData:
+  repository: "${yaml_repository}"
+  credentials: "${yaml_credentials}"
+EOF
+)
+
+    local manifest
+    manifest=$(cat <<EOF
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${job_name}
+  namespace: ${namespace}
+  labels:
+    app.kubernetes.io/name: leptostack-registry-credentials
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: leptostack-registry-credentials
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: registry-credentials
+          image: openbao/openbao:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          env:
+            - name: BAO_ADDR
+              value: "http://${service}.${namespace}.svc.cluster.local:8200"
+            - name: BAO_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: openbao-init
+                  key: root_token
+            - name: HOME
+              value: /tmp
+            - name: MODULE_REGISTRY_REPOSITORY
+              valueFrom:
+                secretKeyRef:
+                  name: ${secret_name}
+                  key: repository
+            - name: MODULE_REGISTRY_CREDENTIALS
+              valueFrom:
+                secretKeyRef:
+                  name: ${secret_name}
+                  key: credentials
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              for module in "\$@"; do
+                bao kv put "k8s/static/\${module}/registry" "\${MODULE_REGISTRY_REPOSITORY}=\${MODULE_REGISTRY_CREDENTIALS}"
+              done
+            - sh
+${module_args}      volumes:
+        - name: tmp
+          emptyDir: {}
+EOF
+)
+
+    echo "Storing module registry credentials in OpenBao..."
+    trap 'delete_openbao_registry_resources "$namespace" "$job_name" "$secret_name"' EXIT
+    delete_openbao_registry_resources "$namespace" "$job_name" "$secret_name"
+    printf '%s' "$secret_manifest" | kubectl --context "${KUBE_CONTEXT}" -n "$namespace" apply -f - >/dev/null
+    printf '%s' "$manifest" | kubectl --context "${KUBE_CONTEXT}" -n "$namespace" apply -f - >/dev/null
+
+    if ! kubectl --context "${KUBE_CONTEXT}" -n "$namespace" wait \
+        --for=condition=complete "job/${job_name}" --timeout=300s >/dev/null 2>&1; then
+        echo "Error: The module registry credentials Job did not complete successfully."
+        kubectl --context "${KUBE_CONTEXT}" -n "$namespace" logs "job/${job_name}" --all-containers --tail=50 || true
+        exit 1
+    fi
+
+    delete_openbao_registry_resources "$namespace" "$job_name" "$secret_name"
+    trap - EXIT
+    echo "Module registry credentials stored successfully."
+    echo
+}
+
+upload_module_registry_credentials() {
+    local -a modules
+    if [[ -n "${MODULE_REGISTRY_MODULES:-}" ]]; then
+        read -ra modules <<< "${MODULE_REGISTRY_MODULES//,/ }"
+    fi
+    if [[ ${#modules[@]} -eq 0 ]]; then
+        return 0
+    fi
+
+    local module
+    for module in "${modules[@]}"; do
+        validate_module_name "$module"
+    done
+    if [[ -z "${MODULE_REGISTRY_REPOSITORY:-}" || -z "${MODULE_REGISTRY_CREDENTIALS:-}" ]]; then
+        echo "Error: Module registry credentials are not fully configured. Re-run '$0 configure'."
+        exit 1
+    fi
+
+    wait_for_kustomization_ready "${CLUSTER_NAME}-openbao-post"
+
+    run_openbao_registry_job "${modules[@]}"
+}
+
 do_start() {
     local resync="${1:-}"
 
@@ -1439,6 +1684,8 @@ do_start() {
         --from-literal=username=git \
         --from-literal=password="$RESOURCES_GIT_PAT"
     echo "  Secret leptostack-base created successfully."
+
+    upload_module_registry_credentials
 }
 
 # --- Re-bootstrap ---
@@ -1463,6 +1710,28 @@ do_rebootstrap() {
 
     check_kubectl_context
     run_flux_bootstrap
+}
+
+# --- Upload Registry Credentials ---
+
+do_set_registry_creds() {
+    load_config
+
+    if [[ -z "${MODULE_REGISTRY_MODULES:-}" ]]; then
+        echo "Error: No modules are configured for registry credentials."
+        echo "Run '$0 configure' first."
+        exit 1
+    fi
+
+    check_kubectl_context
+
+    if ! kubectl --context "${KUBE_CONTEXT}" get --raw /healthz &>/dev/null; then
+        echo "Error: The cluster (${KUBE_CONTEXT}) is not reachable."
+        echo "Start it with: $0 start"
+        exit 1
+    fi
+
+    upload_module_registry_credentials
 }
 
 # --- Status ---
@@ -1940,7 +2209,7 @@ _leptostack() {
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-    commands="configure start stop restart status reset reconnect rebootstrap reconcile events update-dns add-trust port-forward completion get-context version"
+    commands="configure start stop restart status reset reconnect rebootstrap reconcile events update-dns add-trust set-registry-creds port-forward completion get-context version"
     port_forward_services="all stop openbao rabbitmq postgres valkey flowable greenmail"
 
     if [[ ${COMP_CWORD} -eq 1 ]]; then
@@ -1982,6 +2251,7 @@ _leptostack() {
         'events:Watch all cluster events'
         'update-dns:Configure local DNS for the LeptoStack domain'
         'add-trust:Add the internal CA certificate to system trust store'
+        'set-registry-creds:Set the module image registry credentials in OpenBao'
         'port-forward:Port-forward a service in the background'
         'completion:Generate shell completion script'
         'version:Show the leptostack version'
@@ -2044,7 +2314,7 @@ do_version() {
 # --- Main ---
 
 usage() {
-    echo "Usage: $0 {configure|start|stop|restart|status|reset|reconnect|rebootstrap|reconcile|events|update-dns|add-trust|port-forward|completion|get-context|version}"
+    echo "Usage: $0 {configure|start|stop|restart|status|reset|reconnect|rebootstrap|reconcile|events|update-dns|add-trust|set-registry-creds|port-forward|completion|get-context|version}"
     echo
     echo "Commands:"
     echo "  configure      Set up the development environment configuration"
@@ -2059,6 +2329,7 @@ usage() {
     echo "  events         Watch all cluster events"
     echo "  update-dns     Configure local DNS for the LeptoStack domain"
     echo "  add-trust      Add the internal CA certificate to system trust store"
+    echo "  set-registry-creds  Set the module image registry credentials in OpenBao"
     echo "  port-forward   Port-forward a service in the background (all, stop, openbao, rabbitmq, postgres, valkey, flowable, greenmail)"
     echo "  completion     Generate shell completion script (zsh, bash)"
     echo "  get-context    Print the kubectl context name for the configured cluster"
@@ -2094,6 +2365,7 @@ case "$1" in
     events)        do_events ;;
     update-dns)    do_update_dns ;;
     add-trust)     do_add_trust ;;
+    set-registry-creds) do_set_registry_creds ;;
     port-forward)
         if [[ $# -lt 2 ]]; then
             echo "Usage: $0 port-forward {all|stop|openbao|rabbitmq|postgres|valkey|flowable|greenmail}"
