@@ -142,6 +142,20 @@ kubectl --context "$(leptostack get-context)" get pods -A
 
 Triggers an immediate reconciliation of the `flux-system` kustomization with its source.
 
+### `update-flux`
+
+Refreshes the base Flux manifests in the FluxCD repository (`GIT_OWNER/GIT_REPO`) from the cluster template (`TEMPLATE_GIT_URL`). It checks out both repositories and, for each managed path, replaces the destination only when the content differs:
+
+- `apps/devops/base`
+- `apps/leptostack/base`
+- `infrastructure/leptostack-infra.yaml`
+
+Cluster-specific files (`clusters/<cluster_name>` and the overlays) are left untouched. When changes are found they are committed and pushed to `GIT_BRANCH`; otherwise the command reports that the repository is already up to date.
+
+```bash
+leptostack update-flux
+```
+
 ### `events`
 
 Watches all Kubernetes events across all namespaces in real-time.

@@ -455,6 +455,85 @@ sync_cluster_template() {
     rm -rf "$tmp_dir"
 }
 
+# --- Update Flux ---
+
+# Paths in the FluxCD repository that are generated from the cluster template
+# and can be refreshed in place. Cluster-specific overlays (clusters/<name> and
+# apps/*/overlays) are intentionally left untouched.
+FLUX_TEMPLATE_PATHS=(
+    "apps/devops/base"
+    "apps/leptostack/base"
+    "infrastructure/leptostack-infra.yaml"
+)
+
+do_update_flux() {
+    load_config
+
+    TEMPLATE_GIT_URL="${TEMPLATE_GIT_URL:-$TEMPLATE_GIT_URL_DEFAULT}"
+    TEMPLATE_GIT_BRANCH="${TEMPLATE_GIT_BRANCH:-$TEMPLATE_GIT_BRANCH_DEFAULT}"
+
+    local flux_clone_url
+    flux_clone_url=$(build_clone_url "$GIT_OWNER" "$GIT_REPO")
+
+    local tmp_dir orig_dir
+    tmp_dir=$(mktemp -d /tmp/leptostack-update-flux-XXXXXX)
+    orig_dir=$(pwd)
+    trap 'rm -rf "$tmp_dir"' EXIT
+
+    echo "Cloning FluxCD repository ${GIT_OWNER}/${GIT_REPO} (${GIT_BRANCH})..."
+    if ! git clone --branch "$GIT_BRANCH" --depth 1 "$flux_clone_url" "$tmp_dir/fluxcd"; then
+        echo "Error: Could not clone ${GIT_OWNER}/${GIT_REPO} at branch '${GIT_BRANCH}'."
+        exit 1
+    fi
+
+    echo "Cloning cluster template ${TEMPLATE_GIT_URL} (${TEMPLATE_GIT_BRANCH})..."
+    git clone --branch "$TEMPLATE_GIT_BRANCH" --depth 1 "$(build_template_clone_url)" "$tmp_dir/template"
+    # The template is only read locally; drop the origin so the PAT never
+    # persists in the cloned repository's remote configuration.
+    git -C "$tmp_dir/template" remote remove origin
+
+    local path src dst changed=0
+    for path in "${FLUX_TEMPLATE_PATHS[@]}"; do
+        src="${tmp_dir}/template/${path}"
+        dst="${tmp_dir}/fluxcd/${path}"
+
+        if [[ ! -e "$src" ]]; then
+            echo "  ${path}: not found in the cluster template; skipping."
+            continue
+        fi
+
+        # `diff -r` handles directories and files alike; it returns 0 when the
+        # contents are identical and 1 when they differ.
+        if [[ -e "$dst" ]] && diff -rq "$src" "$dst" >/dev/null 2>&1; then
+            echo "  ${path}: up to date."
+            continue
+        fi
+
+        echo "  ${path}: changed, updating."
+        rm -rf "$dst"
+        mkdir -p "$(dirname "$dst")"
+        cp -a "$src" "$dst"
+        changed=1
+    done
+
+    if [[ "$changed" -eq 0 ]]; then
+        echo "FluxCD repository is already up to date with the cluster template."
+        cd "$orig_dir"
+        trap - EXIT
+        rm -rf "$tmp_dir"
+        return 0
+    fi
+
+    cd "$tmp_dir/fluxcd"
+    commit_and_push \
+        "Update FluxCD manifests from cluster template" \
+        "FluxCD repository is already up to date with the cluster template."
+
+    cd "$orig_dir"
+    trap - EXIT
+    rm -rf "$tmp_dir"
+}
+
 # --- Update Check ---
 
 download_latest_version() {
@@ -2209,7 +2288,7 @@ _leptostack() {
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-    commands="configure start stop restart status reset reconnect rebootstrap reconcile events update-dns add-trust set-registry-creds port-forward completion get-context version"
+    commands="configure start stop restart status reset reconnect rebootstrap reconcile update-flux events update-dns add-trust set-registry-creds port-forward completion get-context version"
     port_forward_services="all stop openbao rabbitmq postgres valkey flowable greenmail"
 
     if [[ ${COMP_CWORD} -eq 1 ]]; then
@@ -2248,6 +2327,7 @@ _leptostack() {
         'get-context:Print the kubectl context name for the configured cluster'
         'rebootstrap:Re-run the Flux bootstrap to add/update Flux components'
         'reconcile:Reconcile flux-system kustomization'
+        'update-flux:Update FluxCD base manifests from the cluster template'
         'events:Watch all cluster events'
         'update-dns:Configure local DNS for the LeptoStack domain'
         'add-trust:Add the internal CA certificate to system trust store'
@@ -2314,7 +2394,7 @@ do_version() {
 # --- Main ---
 
 usage() {
-    echo "Usage: $0 {configure|start|stop|restart|status|reset|reconnect|rebootstrap|reconcile|events|update-dns|add-trust|set-registry-creds|port-forward|completion|get-context|version}"
+    echo "Usage: $0 {configure|start|stop|restart|status|reset|reconnect|rebootstrap|reconcile|update-flux|events|update-dns|add-trust|set-registry-creds|port-forward|completion|get-context|version}"
     echo
     echo "Commands:"
     echo "  configure      Set up the development environment configuration"
@@ -2326,6 +2406,7 @@ usage() {
     echo "  reconnect      Reconnect to the vcluster (vcluster provider only)"
     echo "  rebootstrap    Re-run the Flux bootstrap to add/update Flux components"
     echo "  reconcile      Reconcile flux-system kustomization"
+    echo "  update-flux    Update FluxCD base manifests from the cluster template"
     echo "  events         Watch all cluster events"
     echo "  update-dns     Configure local DNS for the LeptoStack domain"
     echo "  add-trust      Add the internal CA certificate to system trust store"
@@ -2362,6 +2443,7 @@ case "$1" in
     reconnect)     do_reconnect ;;
     rebootstrap)   do_rebootstrap ;;
     reconcile)     do_reconcile ;;
+    update-flux)   do_update_flux ;;
     events)        do_events ;;
     update-dns)    do_update_dns ;;
     add-trust)     do_add_trust ;;
