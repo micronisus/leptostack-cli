@@ -133,8 +133,6 @@ generate_cluster_config() {
     fi
 
     if [[ "$CLUSTER_PROVIDER" == "vcluster" ]]; then
-        # vcluster provides the cluster's DNS and ingress class; only the
-        # registry Ingress is written into the repository.
         echo "Creating infrastructure/cluster-config.yaml (vcluster)..."
         cat > "$cluster_config_file" <<EOF
 ---
@@ -265,10 +263,6 @@ EOF
         sed -i '/^resources:/a\  - cluster-config.yaml' "$infra_kustomization_file"
     fi
 
-    # Calculate the load balancer IP on the minikube subnet (.100). vcluster
-    # gets its address from the host ingress, so no IP is pinned there, but the
-    # apisix gateway is still exposed as a LoadBalancer so the host can route
-    # to it.
     local lb_ip=""
     if [[ "$CLUSTER_PROVIDER" != "vcluster" ]]; then
         local minikube_ip subnet
@@ -277,9 +271,6 @@ EOF
         lb_ip="${subnet}.100"
     fi
 
-    # Reuse the example overlay from the cluster template for the local overlay so
-    # template changes don't require updating this script. Only the namePrefix and
-    # the environment-specific apisix LoadBalancerIP are adjusted.
     local example_overlay_dir="${repo_dir}/apps/leptostack/overlays/example"
     if [[ ! -f "${example_overlay_dir}/kustomization.yaml" ]]; then
         echo "Error: Could not find apps/leptostack/overlays/example/kustomization.yaml in the cluster template."
@@ -305,9 +296,6 @@ EOF
         echo "  Added ../../base/greenmail.yaml to overlay kustomization resources."
     fi
 
-    # Expose the apisix gateway through a LoadBalancer. vcluster relies on the
-    # host ingress for the address, so no loadBalancerIP is pinned; minikube
-    # pins the MetalLB address on the minikube subnet.
     if ! grep -q 'name: apisix$' "$overlay_dir/kustomization.yaml"; then
         cat >> "$overlay_dir/kustomization.yaml" <<EOF
 
@@ -333,8 +321,6 @@ EOF
         echo "  Added apisix LoadBalancer patch to overlay kustomization."
     fi
 
-    # The deployed manifests read the cluster identity from the leptostack-config
-    # ConfigMap; keep it in sync with the values configured in this CLI.
     if ! grep -q 'name: leptostack-config' "$overlay_dir/kustomization.yaml"; then
         cat >> "$overlay_dir/kustomization.yaml" <<EOF
 
@@ -367,10 +353,6 @@ sync_cluster_template() {
     local repo_clone_url
     repo_clone_url=$(build_clone_url "$GIT_OWNER" "$GIT_REPO")
 
-    # The repository is populated unless it already contains the cluster
-    # configuration at clusters/<name>; a repository that only has an
-    # auto-generated initial commit must still be populated. A reset forces the
-    # sync regardless.
     local refs
     refs=$(git ls-remote "$repo_clone_url" "refs/heads/$GIT_BRANCH" 2>/dev/null) || true
 
@@ -401,8 +383,6 @@ sync_cluster_template() {
 
     echo "Cloning cluster template ${TEMPLATE_GIT_URL}..."
     git clone --branch "$TEMPLATE_GIT_BRANCH" --depth 1 "$(build_template_clone_url)" "$tmp_dir/template"
-    # The template is only read locally; drop the origin so the PAT never
-    # persists in the cloned repository's remote configuration.
     git -C "$tmp_dir/template" remote remove origin
 
     echo "Replacing repository contents with the cluster template..."
@@ -422,8 +402,6 @@ sync_cluster_template() {
     mv "$example_dir" "${tmp_dir}/repo/${CLUSTER_PATH}"
     echo "Copied clusters/example to ${CLUSTER_PATH}."
 
-    # Use CLUSTER_NAME (not basename CLUSTER_PATH) so the generated names cannot
-    # diverge from the context and minikube profile derived from it.
     local cluster_name cluster_kustomization_file
     cluster_name="$CLUSTER_NAME"
     cluster_kustomization_file="${tmp_dir}/repo/${CLUSTER_PATH}/kustomization.yaml"
@@ -457,9 +435,6 @@ sync_cluster_template() {
 
 # --- Update Flux ---
 
-# Paths in the FluxCD repository that are generated from the cluster template
-# and can be refreshed in place. Cluster-specific overlays (clusters/<name> and
-# apps/*/overlays) are intentionally left untouched.
 FLUX_TEMPLATE_PATHS=(
     "apps/devops/base"
     "apps/leptostack/base"
@@ -488,8 +463,6 @@ do_update_flux() {
 
     echo "Cloning cluster template ${TEMPLATE_GIT_URL} (${TEMPLATE_GIT_BRANCH})..."
     git clone --branch "$TEMPLATE_GIT_BRANCH" --depth 1 "$(build_template_clone_url)" "$tmp_dir/template"
-    # The template is only read locally; drop the origin so the PAT never
-    # persists in the cloned repository's remote configuration.
     git -C "$tmp_dir/template" remote remove origin
 
     local path src dst changed=0
@@ -592,9 +565,6 @@ check_for_updates() {
 }
 
 enforce_update() {
-    # Re-checks the latest version and blocks commands that require an up-to-date CLI.
-    # The `|| status=$?` suppresses errexit so a return of 2 (version unknown) is
-    # not fatal and a return of 1 can print the blocking message before exiting.
     local status=0
     check_for_updates "true" || status=$?
     if [[ "$status" -eq 1 ]]; then
@@ -1021,9 +991,6 @@ do_configure() {
     validate_cluster_name "$CLUSTER_NAME"
     MINIKUBE_PROFILE="leptostack-${CLUSTER_NAME}"
 
-    # A stored vcluster context name is only valid for the inputs it was
-    # generated from; drop it when they change so the next start/reconnect
-    # records the new one.
     if [[ "$CLUSTER_NAME" != "$old_cluster_name" || "$HOST_CONTEXT" != "$old_host_context" || "$HOST_NAMESPACE" != "$old_host_namespace" ]]; then
         VCLUSTER_CONTEXT=""
     fi
@@ -1071,8 +1038,6 @@ do_configure() {
     fi
     REPO_URL="${REPO_URL:-$repo_url_default}"
 
-    # Parse URL to extract hostname, owner, repo
-    # Supports: https://hostname/owner/repo.git or https://hostname/owner/repo
     local url_without_scheme="${REPO_URL#https://}"
     url_without_scheme="${url_without_scheme#http://}"
     url_without_scheme="${url_without_scheme%.git}"
@@ -1285,10 +1250,12 @@ write_vcluster_values() {
     local dest="$1"
     # The template uses literal placeholders so the quoted heredoc is not
     # expanded; the domain is escaped for use inside a CoreDNS regex.
-    local domain_regex sed_domain_regex sed_cluster_name
+    local domain_regex sed_domain_regex sed_cluster_name sed_leptostack_name sed_leptostack_domain
     domain_regex="${LEPTOSTACK_DOMAIN//./\\.}"
     sed_domain_regex=$(sed_escape_replacement "$domain_regex")
     sed_cluster_name=$(sed_escape_replacement "$CLUSTER_NAME")
+    sed_leptostack_name=$(sed_escape_replacement "$LEPTOSTACK_NAME")
+    sed_leptostack_domain=$(sed_escape_replacement "$LEPTOSTACK_DOMAIN")
 
     cat > "$dest" <<'VCLUSTER_VALUES'
 controlPlane:
@@ -1333,12 +1300,61 @@ controlPlane:
       }
 
       import /etc/coredns/custom/*.server
+  distro:
+    k8s:
+      apiServer:
+        extraArgs:
+          - --oidc-issuer-url=https://__LEPTOSTACK_NAME__-sso.__LEPTOSTACK_DOMAIN__/realms/__CLUSTER_NAME__
+          - --oidc-client-id=che
+          - --oidc-username-claim=email
+          - --oidc-groups-claim=groups
+  service:
+    enabled: true
+    spec:
+      type: LoadBalancer
+exportKubeConfig:
+  insecure: true
 VCLUSTER_VALUES
 
     sed -i \
         -e "s/__CLUSTER_NAME__/${sed_cluster_name}/g" \
+        -e "s/__LEPTOSTACK_NAME__/${sed_leptostack_name}/g" \
         -e "s/__LEPTOSTACK_DOMAIN_REGEX__/${sed_domain_regex}/g" \
+        -e "s/__LEPTOSTACK_DOMAIN__/${sed_leptostack_domain}/g" \
         "$dest"
+}
+
+apply_oidc_rbac() {
+    local group="${CLUSTER_NAME}-developers"
+    local manifest
+    manifest=$(cat <<EOF
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: oidc-${CLUSTER_NAME}-developers-cluster-admin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: Group
+    apiGroup: rbac.authorization.k8s.io
+    name: ${group}
+EOF
+)
+
+    echo "Applying OIDC cluster-admin ClusterRoleBinding for group ${group}..."
+    for _ in {1..10}; do
+        if printf '%s\n' "$manifest" | kubectl --context "${KUBE_CONTEXT}" apply -f - >/dev/null 2>&1; then
+            echo "  ClusterRoleBinding applied."
+            return 0
+        fi
+        sleep 3
+    done
+
+    echo "Error: Failed to apply the OIDC ClusterRoleBinding in the cluster."
+    printf '%s\n' "$manifest" | kubectl --context "${KUBE_CONTEXT}" apply -f - || true
+    exit 1
 }
 
 run_flux_bootstrap() {
@@ -1405,6 +1421,10 @@ run_flux_bootstrap() {
 }
 
 start_minikube() {
+    # TODO: Enable OIDC authentication for minikube, mirroring the vcluster
+    # setup in write_vcluster_values (Keycloak issuer, che client, email/groups
+    # claims, insecure CA) and reusing apply_oidc_rbac for the
+    # <cluster_name>-developers cluster-admin binding.
     echo "Starting minikube (profile ${MINIKUBE_PROFILE})..."
     minikube start -p "${MINIKUBE_PROFILE}" --cni=calico --insecure-registry="registry.${LEPTOSTACK_DOMAIN}"
     echo
@@ -1423,10 +1443,6 @@ start_minikube() {
 }
 
 adopt_vcluster_context() {
-    # Must only be called right after `vcluster create`/`connect`, where
-    # vcluster has just switched the current context to the name it generated
-    # (vcluster_<name>_<namespace>_<host-context>). Adopt and report it, falling
-    # back to the derived name otherwise.
     local connected_context
     connected_context=$(kubectl config current-context 2>/dev/null || echo "")
     if [[ -n "$connected_context" && "$connected_context" != "$HOST_CONTEXT" ]]; then
@@ -1435,8 +1451,6 @@ adopt_vcluster_context() {
 
     if kubectl config get-contexts -o name 2>/dev/null | grep -qx "$KUBE_CONTEXT"; then
         kubectl config use-context "$KUBE_CONTEXT" >/dev/null
-        # Record the actual name so future invocations do not depend on the
-        # vcluster naming convention.
         update_config_value VCLUSTER_CONTEXT "$KUBE_CONTEXT"
         echo "  vcluster context: ${KUBE_CONTEXT}"
     else
@@ -1445,14 +1459,10 @@ adopt_vcluster_context() {
 }
 
 disconnect_vcluster() {
-    # `--kube-config-context-name` is deprecated on `vcluster connect`; let
-    # vcluster generate the context name itself and then select it.
     kubectl config use-context "$HOST_CONTEXT"
 }
 
 connect_vcluster() {
-    # `--kube-config-context-name` is deprecated on `vcluster connect`; let
-    # vcluster generate the context name itself and then select it.
     vcluster connect "$CLUSTER_NAME" \
         --namespace "$HOST_NAMESPACE" \
         --context "$HOST_CONTEXT"
@@ -1461,9 +1471,6 @@ connect_vcluster() {
 }
 
 reconnect_vcluster() {
-    # Recreate the vcluster kubeconfig/proxy connection. The proxy can be lost
-    # after a reboot or a period of inactivity, in which case re-running
-    # `vcluster connect` restores it.
     require_vcluster_host
 
     disconnect_vcluster
@@ -1514,6 +1521,9 @@ start_vcluster_cluster() {
         fi
         adopt_vcluster_context
     fi
+
+    apply_oidc_rbac
+
     rm -f "$values_file"
     echo
 }
@@ -1666,8 +1676,6 @@ EOF
 }
 
 upload_module_registry_credentials() {
-    # Skip when no registry credentials are configured (for example a config
-    # file written before registry credentials were part of `configure`).
     if [[ -z "${MODULE_REGISTRY_REPOSITORY:-}" || -z "${MODULE_REGISTRY_CREDENTIALS:-}" ]]; then
         return 0
     fi
@@ -1896,9 +1904,6 @@ do_events() {
 }
 
 check_kustomization_ready() {
-    # Lightweight readiness gate used by commands that only need core
-    # infrastructure (e.g. add-trust, port-forward) rather than the whole
-    # cluster to be reconciled.
     local name="$1"
     local output
     echo "Checking if the ${name} Kustomization is ready..."
@@ -2131,8 +2136,6 @@ exec_port_forward() {
 run_port_forward() {
     local service="$1" start_time
 
-    # The port-forward runs in a fresh process, so it must load the config to
-    # resolve the context and the namespaced service names.
     load_config
 
     mkdir -p "$PORT_FORWARD_STATE_DIR"
