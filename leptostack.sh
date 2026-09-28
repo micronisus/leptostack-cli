@@ -2041,8 +2041,8 @@ print_port_forward_credentials() {
             ;;
         rabbitmq)
             echo "RabbitMQ credentials:"
-            echo "  Username: $(kubectl --context "${KUBE_CONTEXT}" -n "${CLUSTER_NAME}-rabbitmq" get secret "${LEPTOSTACK_NAME}-rabbitmq-default-user" -o jsonpath='{.data.username}' | base64 -d)"
-            echo "  Password: $(kubectl --context "${KUBE_CONTEXT}" -n "${CLUSTER_NAME}-rabbitmq" get secret "${LEPTOSTACK_NAME}-rabbitmq-default-user" -o jsonpath='{.data.password}' | base64 -d)"
+            echo "  Username: $(kubectl --context "${KUBE_CONTEXT}" -n "${CLUSTER_NAME}-rabbitmq" get secret "${CLUSTER_NAME}-rabbitmq-default-user" -o jsonpath='{.data.username}' | base64 -d)"
+            echo "  Password: $(kubectl --context "${KUBE_CONTEXT}" -n "${CLUSTER_NAME}-rabbitmq" get secret "${CLUSTER_NAME}-rabbitmq-default-user" -o jsonpath='{.data.password}' | base64 -d)"
             echo
             ;;
         postgres)
