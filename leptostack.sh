@@ -641,7 +641,6 @@ load_config() {
     HOST_CONTEXT="${HOST_CONTEXT:-}"
     HOST_NAMESPACE="${HOST_NAMESPACE:-${USER:-$(id -un)}}"
     DNS_TARGET_IP="${DNS_TARGET_IP:-}"
-    MODULE_REGISTRY_MODULES="${MODULE_REGISTRY_MODULES:-}"
     MODULE_REGISTRY_REPOSITORY="${MODULE_REGISTRY_REPOSITORY:-}"
     MODULE_REGISTRY_CREDENTIALS="${MODULE_REGISTRY_CREDENTIALS:-}"
 
@@ -664,7 +663,6 @@ save_config() {
     VCLUSTER_CONTEXT="${VCLUSTER_CONTEXT:-}"
     MINIKUBE_CPUS="${MINIKUBE_CPUS:-8}"
     MINIKUBE_MEMORY="${MINIKUBE_MEMORY:-24576}"
-    MODULE_REGISTRY_MODULES="${MODULE_REGISTRY_MODULES:-}"
     MODULE_REGISTRY_REPOSITORY="${MODULE_REGISTRY_REPOSITORY:-ghcr.io}"
     MODULE_REGISTRY_CREDENTIALS="${MODULE_REGISTRY_CREDENTIALS:-}"
     cat > "$CONFIG_FILE" <<EOF
@@ -688,7 +686,6 @@ MINIKUBE_MEMORY="${MINIKUBE_MEMORY}"
 RESOURCES_GIT_PAT="${RESOURCES_GIT_PAT}"
 TEMPLATE_GIT_URL="${TEMPLATE_GIT_URL}"
 TEMPLATE_GIT_BRANCH="${TEMPLATE_GIT_BRANCH}"
-MODULE_REGISTRY_MODULES="${MODULE_REGISTRY_MODULES}"
 MODULE_REGISTRY_REPOSITORY="${MODULE_REGISTRY_REPOSITORY}"
 MODULE_REGISTRY_CREDENTIALS="${MODULE_REGISTRY_CREDENTIALS}"
 EOF
@@ -1172,24 +1169,6 @@ do_configure() {
     fi
     echo
 
-    local registry_modules_default="${MODULE_REGISTRY_MODULES:-module-core}"
-    read -rp "Enter the module(s) to store registry credentials for, comma-separated [${registry_modules_default}]: " input_registry_modules
-    MODULE_REGISTRY_MODULES="${input_registry_modules:-$registry_modules_default}"
-    MODULE_REGISTRY_MODULES="${MODULE_REGISTRY_MODULES//,/ }"
-    local -a registry_modules
-    read -ra registry_modules <<< "$MODULE_REGISTRY_MODULES"
-    if [[ ${#registry_modules[@]} -eq 0 ]]; then
-        echo "Error: At least one module name is required."
-        exit 1
-    fi
-    local module
-    for module in "${registry_modules[@]}"; do
-        validate_module_name "$module"
-    done
-    MODULE_REGISTRY_MODULES="${registry_modules[*]}"
-    echo "  Modules: ${MODULE_REGISTRY_MODULES}"
-    echo
-
     local registry_repository_default="${MODULE_REGISTRY_REPOSITORY:-ghcr.io}"
     read -rp "Enter the container registry repository [${registry_repository_default}]: " input_registry_repository
     MODULE_REGISTRY_REPOSITORY="${input_registry_repository:-$registry_repository_default}"
@@ -1285,14 +1264,6 @@ validate_leptostack_domain() {
     local domain="$1"
     if [[ ! "$domain" =~ ^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$ ]]; then
         echo "Error: Invalid LeptoStack domain '${domain}'. Use letters, digits, '.', '_' and '-'."
-        exit 1
-    fi
-}
-
-validate_module_name() {
-    local name="$1"
-    if [[ ! "$name" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || [[ ${#name} -gt 63 ]]; then
-        echo "Error: Invalid module name '${name}'. Use lowercase letters, digits and '-' (max 63 characters)."
         exit 1
     fi
 }
@@ -1579,19 +1550,14 @@ delete_openbao_registry_resources() {
 }
 
 run_openbao_registry_job() {
-    local modules=("$@")
     local namespace="${CLUSTER_NAME}-openbao"
     local service="${CLUSTER_NAME}-openbao-openbao"
     local job_name="leptostack-registry-credentials"
     local secret_name="leptostack-registry-credentials"
-    local module module_args="" yaml_repository yaml_credentials
+    local yaml_repository yaml_credentials
 
     yaml_repository=$(printf '%s' "$MODULE_REGISTRY_REPOSITORY" | sed 's/\\/\\\\/g; s/"/\\"/g')
     yaml_credentials=$(printf '%s' "$MODULE_REGISTRY_CREDENTIALS" | sed 's/\\/\\\\/g; s/"/\\"/g')
-
-    for module in "${modules[@]}"; do
-        module_args+="            - ${module}"$'\n'
-    done
 
     local secret_manifest
     secret_manifest=$(cat <<EOF
@@ -1673,17 +1639,14 @@ spec:
             - -c
             - |
               set -eu
-              for module in "\$@"; do
-                bao kv put "k8s/static/\${module}/registry" "\${MODULE_REGISTRY_REPOSITORY}=\${MODULE_REGISTRY_CREDENTIALS}"
-              done
-            - sh
-${module_args}      volumes:
+              bao kv put "k8s/static/common/registry" "\${MODULE_REGISTRY_REPOSITORY}=\${MODULE_REGISTRY_CREDENTIALS}"
+      volumes:
         - name: tmp
           emptyDir: {}
 EOF
 )
 
-    echo "Storing module registry credentials in OpenBao..."
+    echo "Storing registry credentials in OpenBao..."
     trap 'delete_openbao_registry_resources "$namespace" "$job_name" "$secret_name"' EXIT
     delete_openbao_registry_resources "$namespace" "$job_name" "$secret_name"
     printf '%s' "$secret_manifest" | kubectl --context "${KUBE_CONTEXT}" -n "$namespace" apply -f - >/dev/null
@@ -1691,38 +1654,27 @@ EOF
 
     if ! kubectl --context "${KUBE_CONTEXT}" -n "$namespace" wait \
         --for=condition=complete "job/${job_name}" --timeout=300s >/dev/null 2>&1; then
-        echo "Error: The module registry credentials Job did not complete successfully."
+        echo "Error: The registry credentials Job did not complete successfully."
         kubectl --context "${KUBE_CONTEXT}" -n "$namespace" logs "job/${job_name}" --all-containers --tail=50 || true
         exit 1
     fi
 
     delete_openbao_registry_resources "$namespace" "$job_name" "$secret_name"
     trap - EXIT
-    echo "Module registry credentials stored successfully."
+    echo "Registry credentials stored successfully."
     echo
 }
 
 upload_module_registry_credentials() {
-    local -a modules
-    if [[ -n "${MODULE_REGISTRY_MODULES:-}" ]]; then
-        read -ra modules <<< "${MODULE_REGISTRY_MODULES//,/ }"
-    fi
-    if [[ ${#modules[@]} -eq 0 ]]; then
-        return 0
-    fi
-
-    local module
-    for module in "${modules[@]}"; do
-        validate_module_name "$module"
-    done
+    # Skip when no registry credentials are configured (for example a config
+    # file written before registry credentials were part of `configure`).
     if [[ -z "${MODULE_REGISTRY_REPOSITORY:-}" || -z "${MODULE_REGISTRY_CREDENTIALS:-}" ]]; then
-        echo "Error: Module registry credentials are not fully configured. Re-run '$0 configure'."
-        exit 1
+        return 0
     fi
 
     wait_for_kustomization_ready "${CLUSTER_NAME}-openbao-post"
 
-    run_openbao_registry_job "${modules[@]}"
+    run_openbao_registry_job
 }
 
 do_start() {
@@ -1796,8 +1748,8 @@ do_rebootstrap() {
 do_set_registry_creds() {
     load_config
 
-    if [[ -z "${MODULE_REGISTRY_MODULES:-}" ]]; then
-        echo "Error: No modules are configured for registry credentials."
+    if [[ -z "${MODULE_REGISTRY_REPOSITORY:-}" || -z "${MODULE_REGISTRY_CREDENTIALS:-}" ]]; then
+        echo "Error: Registry credentials are not configured."
         echo "Run '$0 configure' first."
         exit 1
     fi

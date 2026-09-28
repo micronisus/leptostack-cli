@@ -108,7 +108,7 @@ Starts the development environment:
 
 It then populates the Git repository from the cluster template (see `TEMPLATE_GIT_URL`) when it does not already contain the cluster configuration at `clusters/<cluster_name>`, and runs `flux bootstrap` against the configured Git repository to set up GitOps.
 
-Once OpenBao is online (the `<cluster_name>-openbao-post` Kustomization is ready), the configured module registry credentials are written to OpenBao at `static/<module>/registry` for every configured module (the registry repository is the key, `user:pass` is the value, left unencoded for External Secrets). This allows modules to pull their images from a private registry.
+Once OpenBao is online (the `<cluster_name>-openbao-post` Kustomization is ready), the configured registry credentials are written to OpenBao at the fixed path `static/common/registry` (the registry repository is the key, `user:pass` is the value, left unencoded for External Secrets). This allows modules to pull their images from a private registry.
 
 ### `stop`
 
@@ -182,13 +182,13 @@ After running this command, restart your browsers for the certificate to take ef
 
 ### `set-registry-creds`
 
-Waits for the `<cluster_name>-openbao-post` Kustomization to be ready and writes the configured module registry credentials to OpenBao at `static/<module>/registry`. Use it to retry the upload when it failed during `start` (for example due to a temporary disconnection) or to refresh the credentials after changing the configuration.
+Waits for the `<cluster_name>-openbao-post` Kustomization to be ready and writes the configured registry credentials to OpenBao at the fixed path `static/common/registry`. Use it to retry the upload when it failed during `start` (for example due to a temporary disconnection) or to refresh the credentials after changing the configuration.
 
 ```bash
 leptostack set-registry-creds
 ```
 
-Requires at least one module to be configured (see `MODULE_REGISTRY_MODULES`); run `leptostack configure` first otherwise.
+Requires the registry repository and credentials to be configured; run `leptostack configure` first otherwise.
 
 ### `port-forward <service>`
 
@@ -234,6 +234,5 @@ All configuration is stored at `~/.config/leptostack/config` (mode `600`). It in
 | `MINIKUBE_MEMORY` | Memory in MB allocated to minikube (minikube only) |
 | `TEMPLATE_GIT_URL` | Git repository used as the cluster template (default: `https://github.com/leptostack-fluxcd/cluster-template.git`) |
 | `TEMPLATE_GIT_BRANCH` | Branch of the cluster template to sync from (default: `main`) |
-| `MODULE_REGISTRY_MODULES` | Space-separated module names that need private registry credentials (default: `module-core`) |
 | `MODULE_REGISTRY_REPOSITORY` | Container registry repository used as the secret key, e.g. `ghcr.io` (default: `ghcr.io`) |
-| `MODULE_REGISTRY_CREDENTIALS` | Registry credentials in `user:pass` form, pushed to OpenBao `static/<module>/registry` on `start` |
+| `MODULE_REGISTRY_CREDENTIALS` | Registry credentials in `user:pass` form, pushed to OpenBao `static/common/registry` on `start` |
