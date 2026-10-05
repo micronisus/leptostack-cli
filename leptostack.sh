@@ -19,7 +19,7 @@ else
     fi
 fi
 
-PORT_FORWARD_SERVICES=(openbao rabbitmq postgres valkey flowable greenmail)
+PORT_FORWARD_SERVICES=(openbao rabbitmq postgres valkey flowable greenmail seaweedfs)
 
 MINIKUBE_MIN_VERSION="1.38.1"
 VCLUSTER_MIN_VERSION="0.37.1"
@@ -1312,6 +1312,16 @@ controlPlane:
     enabled: true
     spec:
       type: LoadBalancer
+integrations:
+  metricsServer:
+    enabled: true
+    apiService:
+      service:
+        name: rke2-metrics-server
+        namespace: kube-system
+        port: 443
+    nodes: true
+    pods: true
 exportKubeConfig:
   insecure: true
 VCLUSTER_VALUES
@@ -2061,6 +2071,12 @@ print_port_forward_credentials() {
             echo "  Password: $(kubectl --context "${KUBE_CONTEXT}" -n "${CLUSTER_NAME}-valkey" get secret valkey-admin -o jsonpath='{.data.password}' | base64 -d)"
             echo
             ;;
+        seaweedfs)
+            echo "SeaweedFS S3 admin credentials:"
+            echo "  Access key: $(kubectl --context "${KUBE_CONTEXT}" -n "${CLUSTER_NAME}-seaweedfs" get secret s3admin-s3-secret -o jsonpath='{.data.accessKey}' | base64 -d)"
+            echo "  Secret key: $(kubectl --context "${KUBE_CONTEXT}" -n "${CLUSTER_NAME}-seaweedfs" get secret s3admin-s3-secret -o jsonpath='{.data.secretKey}' | base64 -d)"
+            echo
+            ;;
     esac
 }
 
@@ -2129,6 +2145,9 @@ exec_port_forward() {
             ;;
         greenmail)
             exec kubectl --context "${KUBE_CONTEXT}" -n greenmail port-forward services/api 8025:80
+            ;;
+        seaweedfs)
+            exec kubectl --context "${KUBE_CONTEXT}" -n "${CLUSTER_NAME}-seaweedfs" port-forward "services/${CLUSTER_NAME}-seaweedfs-filer" 8888:8888 8333:8333
             ;;
     esac
 }
@@ -2217,13 +2236,13 @@ do_port_forward() {
                 start_port_forward_service "$svc"
             done
             ;;
-        openbao|rabbitmq|postgres|valkey|flowable|greenmail)
+        openbao|rabbitmq|postgres|valkey|flowable|greenmail|seaweedfs)
             print_port_forward_credentials "$service"
             start_port_forward_service "$service"
             ;;
         *)
             echo "Error: Unknown service '$service'."
-            echo "Supported services: all, stop, openbao, rabbitmq, postgres, valkey, flowable, greenmail"
+            echo "Supported services: all, stop, openbao, rabbitmq, postgres, valkey, flowable, greenmail, seaweedfs"
             exit 1
             ;;
     esac
@@ -2244,7 +2263,7 @@ _leptostack() {
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
     commands="configure start stop restart status reset reconnect rebootstrap reconcile update-flux events update-dns add-trust set-registry-creds port-forward completion get-context version"
-    port_forward_services="all stop openbao rabbitmq postgres valkey flowable greenmail"
+    port_forward_services="all stop openbao rabbitmq postgres valkey flowable greenmail seaweedfs"
 
     if [[ ${COMP_CWORD} -eq 1 ]]; then
         COMPREPLY=( $(compgen -W "${commands}" -- "${cur}") )
@@ -2304,7 +2323,7 @@ _leptostack() {
             case $words[1] in
                 port-forward)
                     local -a services
-                    services=('openbao:Port-forward OpenBao' 'rabbitmq:Port-forward RabbitMQ' 'postgres:Port-forward PostgreSQL' 'valkey:Port-forward Valkey' 'flowable:Port-forward Flowable REST' 'greenmail:Port-forward GreenMail' 'all:Port-forward all services' 'stop:Stop all port-forwards')
+                    services=('openbao:Port-forward OpenBao' 'rabbitmq:Port-forward RabbitMQ' 'postgres:Port-forward PostgreSQL' 'valkey:Port-forward Valkey' 'flowable:Port-forward Flowable REST' 'greenmail:Port-forward GreenMail' 'seaweedfs:Port-forward SeaweedFS Filer (S3)' 'all:Port-forward all services' 'stop:Stop all port-forwards')
                     _describe -t services 'service' services
                     ;;
                 completion)
@@ -2366,7 +2385,7 @@ usage() {
     echo "  update-dns     Configure local DNS for the LeptoStack domain"
     echo "  add-trust      Add the internal CA certificate to system trust store"
     echo "  set-registry-creds  Set the module image registry credentials in OpenBao"
-    echo "  port-forward   Port-forward a service in the background (all, stop, openbao, rabbitmq, postgres, valkey, flowable, greenmail)"
+    echo "  port-forward   Port-forward a service in the background (all, stop, openbao, rabbitmq, postgres, valkey, flowable, greenmail, seaweedfs)"
     echo "  completion     Generate shell completion script (zsh, bash)"
     echo "  get-context    Print the kubectl context name for the configured cluster"
     echo "  version        Show the leptostack version"
@@ -2405,7 +2424,7 @@ case "$1" in
     set-registry-creds) do_set_registry_creds ;;
     port-forward)
         if [[ $# -lt 2 ]]; then
-            echo "Usage: $0 port-forward {all|stop|openbao|rabbitmq|postgres|valkey|flowable|greenmail}"
+            echo "Usage: $0 port-forward {all|stop|openbao|rabbitmq|postgres|valkey|flowable|greenmail|seaweedfs}"
             exit 1
         fi
         do_port_forward "$2"
