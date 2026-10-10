@@ -5,6 +5,12 @@ set -euo pipefail
 CONFIG_DIR="${HOME}/.config/leptostack"
 CONFIG_FILE="${CONFIG_DIR}/config"
 
+CA_CERT_FILE="${CONFIG_DIR}/leptostack-ca.crt"
+CA_KEY_FILE="${CONFIG_DIR}/leptostack-ca.key"
+CA_SECRET_NAME="internal-ca-secret"
+CA_SECRET_NAMESPACE="cert-manager"
+CA_VALIDITY_DAYS="3650"
+
 if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
     PORT_FORWARD_STATE_DIR="${XDG_RUNTIME_DIR}/leptostack/port-forwards"
 else
@@ -345,6 +351,50 @@ EOF
     echo "Cluster overlay files created at apps/leptostack/overlays/${cluster_name}"
 }
 
+add_internal_ca_delete_patch() {
+    # Adds a patch entry to the infra-config Kustomization (inside the cluster
+    # kustomization) that deletes the self-signed Certificate which used to
+    # create the internal CA secret. The script now provides that secret, so
+    # cert-manager must no longer manage it. It prepends the entry to the
+    # existing /spec/patches value.
+    local file="$1" tmp
+    [[ -f "$file" ]] || return 1
+
+    if grep -qE 'name: internal-ca$' "$file"; then
+        return 1
+    fi
+    if ! grep -q 'path: "/spec/patches"' "$file"; then
+        return 1
+    fi
+
+    tmp=$(mktemp /tmp/leptostack-internal-ca-XXXXXX.yaml)
+    if ! awk '
+        { print }
+        found && /^[[:space:]]*value:/ {
+            print "          - target:"
+            print "              group: cert-manager.io"
+            print "              version: v1"
+            print "              kind: Certificate"
+            print "              name: internal-ca"
+            print "              namespace: cert-manager"
+            print "            patch: |"
+            print "              $patch: delete"
+            print "              apiVersion: cert-manager.io/v1"
+            print "              kind: Certificate"
+            print "              metadata:"
+            print "                name: internal-ca"
+            print "                namespace: cert-manager"
+            found=0
+        }
+        /path: "\/spec\/patches"/ { found=1 }
+    ' "$file" > "$tmp"; then
+        rm -f "$tmp"
+        return 1
+    fi
+    mv "$tmp" "$file"
+    return 0
+}
+
 sync_cluster_template() {
     local force="${1:-}"
     TEMPLATE_GIT_URL="${TEMPLATE_GIT_URL:-$TEMPLATE_GIT_URL_DEFAULT}"
@@ -416,6 +466,10 @@ sync_cluster_template() {
         -e "s|overlays/example|overlays/${cluster_name}|g" \
         "$cluster_kustomization_file"
     echo "Renamed example cluster references to ${cluster_name} in ${CLUSTER_PATH}/kustomization.yaml."
+
+    if add_internal_ca_delete_patch "$cluster_kustomization_file"; then
+        echo "  Patched the infra-config Kustomization to delete the self-signed internal-ca Certificate."
+    fi
 
     generate_cluster_config "${tmp_dir}/repo" "$cluster_name"
 
@@ -845,6 +899,68 @@ configure_minikube_resources() {
     minikube config set memory "$MINIKUBE_MEMORY"
 }
 
+# --- Internal CA ---
+
+generate_ca_certificate() {
+    if ! command -v openssl &>/dev/null; then
+        echo "Error: openssl is not installed."
+        echo "The internal CA certificate is generated with openssl; please install it first."
+        exit 1
+    fi
+
+    mkdir -p "$CONFIG_DIR"
+    chmod 700 "$CONFIG_DIR"
+
+    local tmp_dir
+    tmp_dir=$(mktemp -d /tmp/leptostack-ca-XXXXXX)
+
+    echo "Generating self-signed internal CA certificate..."
+    if ! openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+        -keyout "${tmp_dir}/ca.key" -out "${tmp_dir}/ca.crt" \
+        -days "$CA_VALIDITY_DAYS" -nodes \
+        -subj "/CN=LeptoStack Internal CA" \
+        -addext "basicConstraints=critical,CA:TRUE" \
+        -addext "keyUsage=critical,keyCertSign,cRLSign" >/dev/null 2>&1; then
+        rm -rf "$tmp_dir"
+        echo "Error: Failed to generate the internal CA certificate."
+        exit 1
+    fi
+
+    install -m 600 "${tmp_dir}/ca.key" "$CA_KEY_FILE"
+    install -m 644 "${tmp_dir}/ca.crt" "$CA_CERT_FILE"
+    rm -rf "$tmp_dir"
+
+    echo "  CA certificate: $CA_CERT_FILE"
+    echo "  CA private key: $CA_KEY_FILE"
+}
+
+ensure_ca_certificate() {
+    if [[ -s "$CA_CERT_FILE" && -s "$CA_KEY_FILE" ]]; then
+        return 0
+    fi
+    generate_ca_certificate
+}
+
+apply_ca_secret() {
+    ensure_ca_certificate
+
+    wait_for_kustomization_ready cert-manager
+
+    # The self-signed Certificate is removed from the manifests, but leftover
+    # copies are not pruned by infra-config; delete any so cert-manager stops
+    # managing the secret the script provides.
+    kubectl --context "${KUBE_CONTEXT}" -n "$CA_SECRET_NAMESPACE" delete certificate internal-ca \
+        --ignore-not-found >/dev/null 2>&1 || true
+
+    echo "Creating the ${CA_SECRET_NAME} TLS secret in the ${CA_SECRET_NAMESPACE} namespace..."
+    kubectl --context "${KUBE_CONTEXT}" -n "$CA_SECRET_NAMESPACE" create secret tls "$CA_SECRET_NAME" \
+        --cert="$CA_CERT_FILE" \
+        --key="$CA_KEY_FILE" \
+        --dry-run=client -o yaml | kubectl --context "${KUBE_CONTEXT}" apply -f - >/dev/null
+    echo "  Secret ${CA_SECRET_NAME} applied."
+    echo
+}
+
 # --- Configure ---
 
 do_configure() {
@@ -1268,6 +1384,15 @@ controlPlane:
         cpu: "4"
         memory: "8Gi"
         ephemeral-storage: "20Gi"
+    persistence:
+      addVolumes:
+        - name: oidc-ca
+          secret:
+            secretName: __CLUSTER_NAME__-oidc-ca
+      addVolumeMounts:
+        - name: oidc-ca
+          mountPath: /etc/oidc
+          readOnly: true
   coredns:
     overwriteConfig: |-
       .:1053 {
@@ -1308,6 +1433,7 @@ controlPlane:
           - --oidc-client-id=che
           - --oidc-username-claim=email
           - --oidc-groups-claim=groups
+          - --oidc-ca-file=/etc/oidc/ca.crt
   service:
     enabled: true
     spec:
@@ -1322,8 +1448,6 @@ integrations:
         port: 443
     nodes: true
     pods: true
-exportKubeConfig:
-  insecure: true
 VCLUSTER_VALUES
 
     sed -i \
@@ -1488,19 +1612,41 @@ reconnect_vcluster() {
     connect_vcluster
 }
 
+# --- vCluster OIDC CA ---
+
+ensure_vcluster_oidc_ca_secret() {
+    ensure_ca_certificate
+
+    # vcluster creates its namespace on demand; ensure it exists before the
+    # secret the API server volume references is created.
+    if ! kubectl --context "$HOST_CONTEXT" get namespace "$HOST_NAMESPACE" &>/dev/null; then
+        echo "Creating host namespace ${HOST_NAMESPACE}..."
+        kubectl --context "$HOST_CONTEXT" create namespace "$HOST_NAMESPACE" >/dev/null
+    fi
+
+    local secret_name="${CLUSTER_NAME}-oidc-ca"
+    echo "Publishing the internal CA to host secret ${HOST_NAMESPACE}/${secret_name} for the vCluster API server OIDC configuration..."
+    kubectl --context "$HOST_CONTEXT" -n "$HOST_NAMESPACE" create secret generic "$secret_name" \
+        --from-file=ca.crt="$CA_CERT_FILE" \
+        --dry-run=client -o yaml | kubectl --context "$HOST_CONTEXT" -n "$HOST_NAMESPACE" apply -f - >/dev/null
+}
+
+vcluster_exists() {
+    local out
+    out=$(kubectl --context "$HOST_CONTEXT" -n "$HOST_NAMESPACE" get statefulset \
+        -l "app=vcluster,release=${CLUSTER_NAME}" -o name 2>/dev/null) || true
+    [[ -n "$out" ]]
+}
+
 start_vcluster_cluster() {
     require_vcluster_host
+
+    ensure_vcluster_oidc_ca_secret
 
     local values_file
     values_file=$(mktemp /tmp/leptostack-vcluster-XXXXXX.yaml)
 
-    local exists=""
-    if kubectl --context "$HOST_CONTEXT" -n "$HOST_NAMESPACE" get statefulset \
-        -l "app=vcluster,release=${CLUSTER_NAME}" -o name 2>/dev/null | grep -q .; then
-        exists="true"
-    fi
-
-    if [[ -n "$exists" ]]; then
+    if vcluster_exists; then
         echo "Resuming vcluster ${CLUSTER_NAME}..."
         # Resuming an already-running vcluster is a no-op that reports an error;
         # ignore it so re-running `start` stays idempotent.
@@ -1703,6 +1849,11 @@ do_start() {
     echo "=== Starting LeptoStack Development Environment ==="
     echo
 
+    # Make sure the internal CA exists before the cluster is deployed, so it is
+    # available for the cluster configuration and persists across resets.
+    ensure_ca_certificate
+    echo
+
     if [[ "$CLUSTER_PROVIDER" == "vcluster" ]]; then
         start_vcluster_cluster
     else
@@ -1733,6 +1884,11 @@ do_start() {
         --from-literal=username=git \
         --from-literal=password="$RESOURCES_GIT_PAT"
     echo "  Secret leptostack-base created successfully."
+    echo
+
+    # The internal CA is provided to cert-manager as a TLS secret so the cluster
+    # issuer can be created from it. Wait for cert-manager before publishing it.
+    apply_ca_secret
 
     upload_module_registry_credentials
 }
@@ -1861,10 +2017,14 @@ do_reset() {
 
     if [[ "$CLUSTER_PROVIDER" == "vcluster" ]]; then
         require_vcluster_host
-        echo "Deleting vcluster ${CLUSTER_NAME}..."
-        vcluster delete "$CLUSTER_NAME" \
-            --namespace "$HOST_NAMESPACE" \
-            --context "$HOST_CONTEXT"
+        if vcluster_exists; then
+            echo "Deleting vcluster ${CLUSTER_NAME}..."
+            vcluster delete "$CLUSTER_NAME" \
+                --namespace "$HOST_NAMESPACE" \
+                --context "$HOST_CONTEXT"
+        else
+            echo "vcluster ${CLUSTER_NAME} is already deleted; skipping."
+        fi
         kubectl config delete-context "$KUBE_CONTEXT" >/dev/null 2>&1 || true
         echo
     else
@@ -2007,37 +2167,21 @@ do_update_dns() {
 
 do_add_trust() {
     load_config
-    check_kubectl_context
+    ensure_ca_certificate
 
-    check_kustomization_ready "infra-config"
-
-    # Download the CA certificate from the secret
-    local tmp_ca
-    tmp_ca=$(mktemp /tmp/leptostack-ca-XXXXXX.crt)
-    echo "Extracting CA certificate from cert-manager/internal-ca-secret..."
-    kubectl --context "${KUBE_CONTEXT}" get secret internal-ca-secret -n cert-manager -o jsonpath='{.data.ca\.crt}' | base64 -d > "$tmp_ca"
-
-    if [[ ! -s "$tmp_ca" ]]; then
-        echo "Error: Failed to extract CA certificate from secret cert-manager/internal-ca-secret."
-        rm -f "$tmp_ca"
-        exit 1
-    fi
-
-    echo "CA certificate saved to $tmp_ca"
     echo "Installing CA certificate to system trust store..."
 
     case "$DISTRO" in
         arch)
-            sudo trust anchor --store "$tmp_ca"
+            sudo trust anchor --store "$CA_CERT_FILE"
             ;;
         fedora)
-            sudo cp "$tmp_ca" "/etc/pki/ca-trust/source/anchors/${LEPTOSTACK_DOMAIN}.crt"
+            sudo cp "$CA_CERT_FILE" "/etc/pki/ca-trust/source/anchors/${LEPTOSTACK_DOMAIN}.crt"
             sudo chmod 644 "/etc/pki/ca-trust/source/anchors/${LEPTOSTACK_DOMAIN}.crt"
             sudo update-ca-trust
             ;;
     esac
 
-    rm -f "$tmp_ca"
     echo "CA certificate installed successfully."
     echo
     echo "Please restart your browsers for the new CA certificate to take effect."
