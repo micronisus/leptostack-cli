@@ -1,239 +1,429 @@
 # LeptoStack Bootstrap
 
-A CLI tool for managing the LeptoStack local development environment. It provisions a development cluster (either a local minikube cluster or a vcluster running on an existing Kubernetes cluster), bootstraps FluxCD for GitOps-based deployments, and configures local DNS and TLS trust.
+A CLI tool for managing the LeptoStack local development environment. It
+provisions a development cluster (a local **minikube** cluster or a **vcluster**
+running on an existing Kubernetes cluster), bootstraps FluxCD for GitOps-based
+deployments, manages Flux sources and secrets, pauses/restores kustomizations,
+and configures local DNS and TLS trust.
+
+The CLI is a single static Go binary (one per platform) with a kubectl-inspired
+command grammar. The legacy `leptostack.sh` and `leptostack.ps1` scripts remain
+published during the deprecation window; see [Migrating from the shell
+CLI](#migrating-from-the-shell-cli).
 
 ## Installation
 
-Install the latest release with a single command:
+Install the latest release:
 
 ```bash
-curl -fsSL -o leptostack.sh https://github.com/micronisus/leptostack-cli/releases/latest/download/leptostack.sh && chmod +x leptostack.sh && sudo mv leptostack.sh /usr/local/bin/leptostack
+curl -fsSL https://raw.githubusercontent.com/micronisus/leptostack-cli/main/install.sh | sh
 ```
 
-The `.sha256` checksum file is also published with each release for optional verification.
+The installer downloads the right archive, verifies its `sha256` against the
+published `checksums.txt`, and installs the binary to `/usr/local/bin`.
 
-Alternatively, clone the repository and install the script from source:
+From source:
 
 ```bash
 git clone https://github.com/micronisus/leptostack-cli.git
 cd leptostack-cli
-chmod +x leptostack.sh
-sudo ln -sf "$(pwd)/leptostack.sh" /usr/local/bin/leptostack
+make build          # produces bin/leptostack
+make install        # installs to /usr/local/bin
+```
+
+Shell completions:
+
+```bash
+leptostack completion bash > /etc/bash_completion.d/leptostack   # bash
+leptostack completion zsh  > "${fpath[1]}/_leptostack"           # zsh
+leptostack completion fish > ~/.config/fish/completions/leptostack.fish
+leptostack completion powershell | Out-String | Invoke-Expression
 ```
 
 ## Prerequisites
 
-- **OS:** Fedora, Ubuntu, or Arch Linux
-- **kubectl** ([Install](https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/))
-- **Flux CLI:** >= 2.8.7 ([Install](https://fluxcd.io/flux/installation/))
-- **NetworkManager** configured with the dnsmasq plugin (required for `update-dns`)
+- **OS:** Fedora or Arch Linux (for DNS/CA integration). `kubectl`, `git` and
+  `flux >= 2.8.7` are always required.
+- **minikube:** `minikube >= 1.38.1` plus podman. Hardware: minimum 32GB RAM and
+  8 CPU cores (recommended).
+- **vcluster:** `vcluster >= 0.37.1` and access to an existing Kubernetes
+  cluster (the *host* cluster). The host must expose an ingress/load-balancer
+  address reachable from this machine; `dns update` discovers it from the
+  `apisix-gateway` Service.
 
-Depending on the selected cluster provider:
+Run `leptostack doctor` to check all of the above.
 
-- **minikube:** >= 1.38.1 ([Install](https://minikube.sigs.k8s.io/docs/start/)), plus podman. Hardware: minimum 32GB RAM and 8 CPU cores (recommended).
-- **vcluster:** >= 0.37.1 ([Install](https://www.vcluster.com/docs/getting-started/setup)) and access to an existing Kubernetes cluster (the *host* cluster). The host must expose an ingress/load-balancer address reachable from this machine; that address is the required `DNS_TARGET_IP` config value.
-
-
-## Installation on Fedora
-
-- Check for kubectl if not ask the user to install
-- Ask the user to configure Podman Driver without CPU or Memory
-- Check if auth details for docker.io have been configured else give a warning
-- Configure Minikube for Podman (add sudoers file for NOPASSWD)
-- Update the ulimit for Podman (/etc/containers/containers.conf)
-- Update 
-
-## Usage
+## Quick start
 
 ```bash
-leptostack <command>
-```
-
-```bash
-leptostack version
-```
-
-## Quick Start
-
-```bash
-# First-time setup
-leptostack configure
-
-# Start the environment
+leptostack config init     # guided wizard (adds a named cluster)
 leptostack start
-
-# Configure local DNS (after all kustomizations are ready)
-leptostack update-dns
-
-# Trust the internal CA certificate
-leptostack add-trust
-
-# Check status
+leptostack dns update
+leptostack ca install
 leptostack status
-
-# Stop when done
 leptostack stop
 ```
 
-## Commands
+## Command grammar
 
-### `configure`
+Two rules define the command surface:
 
-Interactive setup wizard that:
+1. **Object operations** use `leptostack <verb> <resource> [name]`, with optional
+   kubectl-style `resource/name` compound syntax:
 
-1. Verifies kubectl and the flux CLI are installed
-2. Prompts for the cluster provider: `minikube` or `vcluster`
-3. For minikube: verifies the minikube version, checks system resources (RAM and CPU), and sets up podman
-4. For vcluster: verifies `vcluster >= 0.37.1`, and prompts for the host Kubernetes context and host namespace
-5. Prompts for the cluster name (default: `local`), LeptoStack name (default: `portal`), and LeptoStack domain (default: `<user>-leptostack.test`)
-6. For vcluster: prompts for `DNS_TARGET_IP`
-7. Prompts for the LeptoStack development environment Git repository URL
-8. Parses and confirms hostname, owner, and repo from the URL
-9. Prompts for branch name (default: `main`) and cluster path (default: `clusters/<cluster_name>`)
-10. Prompts for Git server type (GitHub, Gitea/Forgejo, or GitLab)
-11. Prompts for a Personal Access Token (PAT) and the LeptoStack resources repository PAT
-12. Prompts for the module(s) that need private registry credentials (comma-separated, default: `module-core`), the registry repository (default: `ghcr.io`), and the credentials (`user:pass`)
-13. For minikube: configures minikube CPU and memory allocation (default: 8 CPUs, 24576MB)
+   ```bash
+   leptostack reconcile kustomization leptostack-base
+   leptostack reconcile kustomization/leptostack-base     # same
+   leptostack create source git my-repo --url git@github.com:me/repo.git
+   leptostack disable kustomization apps-devops
+   leptostack logs port-forward openbao
+   ```
 
-Configuration is saved to `~/.config/leptostack/config`. The internal CA certificate and key are generated on first `start` if they do not already exist (for example after updating an older install) and stored next to the config as `~/.config/leptostack/leptostack-ca.crt` and `~/.config/leptostack/leptostack-ca.key` (mode `600`), so they are reused across resets.
+2. **Cluster lifecycle** uses bare verbs (`start`, `stop`, `restart`, `status`,
+   `connect`, `delete`), acting on the selected cluster.
 
-For minikube, the kubectl context and the minikube profile are derived from the cluster name as `leptostack-<cluster_name>`. For vcluster, the context name is generated by vcluster itself; the exact name is read from the generated kubeconfig after create/connect, selected, printed, and stored in `VCLUSTER_CONTEXT` so later commands don't depend on vcluster's naming convention. **Breaking change:** minikube clusters are no longer created under the default `minikube` profile; existing installs must be recreated (for example with `leptostack reset`).
+Lists are plural, single objects singular, all lowercase. Command names contain
+hyphens only where already established (`port-forward`).
 
-### `start`
+### Command tree
 
-Starts the development environment:
-
-- **minikube:** starts the `leptostack-<cluster_name>` profile and enables the `metallb`, `registry`, and `metrics-server` addons.
-- **vcluster:** creates the vcluster on the configured host context/namespace if it does not exist, otherwise resumes and connects to it. The context name is generated by vcluster and selected/printed after connecting. The generated `vcluster.yaml` values configure the control-plane resources, the CoreDNS rewrites for the configured domain and cluster name, and the API server OIDC configuration. Before creating the vcluster, the internal CA is published to a `${CLUSTER_NAME}-oidc-ca` secret in the host namespace, which the control plane mounts so the API server can verify the Keycloak OIDC issuer via `--oidc-ca-file`. No MetalLB, podman, or minikube addons are used.
-
-It then populates the Git repository from the cluster template (see `TEMPLATE_GIT_URL`) when it does not already contain the cluster configuration at `clusters/<cluster_name>`, and runs `flux bootstrap` against the configured Git repository to set up GitOps.
-
-Once OpenBao is online (the `<cluster_name>-openbao-post` Kustomization is ready), the configured registry credentials are written to OpenBao at the fixed path `static/common/registry` (the registry repository is the key, `user:pass` is the value, left unencoded for External Secrets). This allows modules to pull their images from a private registry.
-
-`start` ensures the internal CA exists (generating it on first run and reusing it afterwards). After the `leptostack-base` Git secret is created, it waits for the `cert-manager` Kustomization to become ready and then publishes the stored internal CA as the `internal-ca-secret` TLS secret (`kubernetes.io/tls`, with `tls.crt`/`tls.key`) in the `cert-manager` namespace. The cluster kustomization patches the `infra-config` Kustomization to delete the self-signed `internal-ca` Certificate, so cert-manager no longer manages that secret; the internal ClusterIssuer and trust-manager Bundles keep consuming `internal-ca-secret` unchanged.
-
-### `stop`
-
-Stops the cluster: `minikube stop` for minikube, or `vcluster pause` for vcluster. Pausing a vcluster scales down the control plane and removes tenant workloads; persistent volumes are retained and workloads are recreated on the next `start`.
-
-### `status`
-
-Displays the current state of:
-
-- The cluster (minikube status or `vcluster list`)
-- Flux version
-- All Flux kustomizations and their reconciliation status
-
-### `reset`
-
-Deletes the cluster (minikube delete or `vcluster delete`), wipes the Git repository, re-populates it with the latest cluster template, and re-runs the `start` workflow. If the vcluster no longer exists, its deletion is skipped so the reset can continue. Prompts for confirmation before proceeding.
-
-### `reconnect`
-
-vcluster only. Recreates the vcluster proxy/kubeconfig connection when it is lost (for example after a reboot or a period of inactivity) by re-running `vcluster connect` against the configured host context and namespace. The context name vcluster generates is selected, printed, and recorded in `VCLUSTER_CONTEXT`. Errors out if the configured provider is minikube.
-
-### `get-context`
-
-Prints the kubectl context name for the configured cluster (`leptostack-<cluster_name>` for minikube, or the stored/generated vcluster context name). Only the name is printed, so it can be used in command substitution, for example:
-
-```bash
-kubectl --context "$(leptostack get-context)" get pods -A
+```text
+leptostack
+├── version [--check]                    # client version, optional update check
+├── upgrade [--check]                    # self-update from GitHub releases
+├── completion bash|zsh|fish|powershell
+├── doctor [-o json]                     # prerequisites: kubectl/flux/minikube/…
+├── start | stop | restart | status | connect | delete
+├── get
+│   ├── clusters | cluster               # all/single configured clusters + live state
+│   ├── kustomizations | sources | secrets | context | port-forwards | events
+├── create
+│   ├── source git|helm|bucket|oci <name>
+│   └── secret git|docker-registry|tls|opaque <name>
+├── delete
+│   ├── source <type>/<name> | secret <name> | port-forward <service>|--all
+├── reconcile kustomization|source [name]
+├── wait kustomization <name>|all [--ready] [--timeout]
+├── bootstrap | sync cluster | sync flux
+├── enable|disable kustomization <name>|all      # suspend/resume aliases
+├── dns update|get|delete
+├── ca status|install|export
+├── registry get|set-credentials|delete
+├── port-forward <service> [-f|-d] [--local-port N] [--address A]
+├── logs port-forward <service> [-f]
+└── config init|view|set|unset|use-context
 ```
 
-### `reconcile`
+`port-forward` services: `openbao`, `rabbitmq`, `postgres`, `valkey`, `flowable`,
+`greenmail`, `seaweedfs` (plus `all`).
 
-Triggers an immediate reconciliation of the `flux-system` kustomization with its source.
+## Global flags
 
-### `update-flux`
+| Flag | Purpose |
+|---|---|
+| `-c, --cluster <name>` | Select the configured cluster (default: `current-context`) |
+| `--context <name>` | Override the kubectl context (default: derived per provider) |
+| `-n, --namespace <ns>` | Namespace scope where applicable |
+| `--kubeconfig <path>` | kubeconfig to use (default: standard resolution) |
+| `-o, --output <fmt>` | `wide`, `json`, `yaml`, `name`, or `human` (default) |
+| `-y, --yes` | Skip confirmation prompts (required in non-interactive contexts) |
+| `--dry-run` | Client-side validation only; no side effects |
+| `--timeout <duration>` | Command-level timeout (defaults per command) |
+| `-v, --verbose <int>` | Log level 0–4 |
+| `--no-color` | Disable ANSI color (auto when output is not a TTY) |
+| `--non-interactive` | Fail instead of prompting when a required value is missing |
 
-Refreshes the base Flux manifests in the FluxCD repository (`GIT_OWNER/GIT_REPO`) from the cluster template (`TEMPLATE_GIT_URL`). It checks out both repositories and, for each managed path, replaces the destination only when the content differs:
+Human output never mixes with machine output on stdout; warnings and progress go
+to stderr, so `-o json | jq` is always safe.
 
-- `apps/devops/base`
-- `apps/leptostack/base`
-- `infrastructure/leptostack-infra.yaml`
+## Exit codes
 
-Cluster-specific files (`clusters/<cluster_name>` and the overlays) are left untouched. When changes are found they are committed and pushed to `GIT_BRANCH`; otherwise the command reports that the repository is already up to date.
+| Code | Meaning |
+|---|---|
+| 0 | success |
+| 1 | generic runtime failure |
+| 2 | usage error (bad flags/args) |
+| 3 | configuration missing or invalid |
+| 4 | prerequisite tool missing or too old (kubectl, flux, minikube, vcluster) |
+| 5 | timeout while waiting for a condition |
+| 6 | cluster not running/not reachable |
 
-```bash
-leptostack update-flux
-```
-
-### `events`
-
-Watches all Kubernetes events across all namespaces in real-time.
-
-### `update-dns`
-
-Configures local DNS resolution for the configured LeptoStack domain:
-
-1. Checks that NetworkManager is configured with the dnsmasq plugin
-2. Writes `address=/<domain>/<target>` to `/etc/NetworkManager/dnsmasq.d/leptostack-<cluster_name>.conf`
-3. Restarts NetworkManager
-
-The target address is the minikube load-balancer IP (`.100` on the minikube subnet) for minikube. For vcluster it is read from the `apisix-gateway` Service in the `ingress-<cluster_name>` namespace (`status.loadBalancer.ingress[0].ip`), falling back to `DNS_TARGET_IP` when that address is not yet available.
-
-### `add-trust`
-
-Installs the cluster's internal CA certificate into the system trust store:
-
-1. Generates the internal CA if it is not already stored (otherwise uses the stored one)
-2. Installs `~/.config/leptostack/leptostack-ca.crt` to the OS trust store (method varies by distro)
-
-Because the CA is stored in the configuration and reused across resets, this command only needs to be run once. After running it, restart your browsers for the certificate to take effect.
-
-### `set-registry-creds`
-
-Waits for the `<cluster_name>-openbao-post` Kustomization to be ready and writes the configured registry credentials to OpenBao at the fixed path `static/common/registry`. Use it to retry the upload when it failed during `start` (for example due to a temporary disconnection) or to refresh the credentials after changing the configuration.
+## Scriptable usage
 
 ```bash
-leptostack set-registry-creds
+# Machine-readable status
+leptostack status -o json
+leptostack get kustomizations -o json | jq -r '.[] | select(.ready==false) | .metadata.name'
+
+# Stable context for scripts
+ctx=$(leptostack get context -o name)
+kubectl --context "$ctx" get pods -A
+
+# Wait for readiness with a real exit code
+leptostack wait kustomization all --ready --timeout 20m
+
+# Non-interactive delete
+leptostack delete --yes
+
+# Credentials without a prompt or disk round-trip
+op read "op://LeptoStack/ghcr/password" \
+  | leptostack registry set-credentials --repo ghcr.io --user me --password-stdin
 ```
 
-Requires the registry repository and credentials to be configured; run `leptostack configure` first otherwise.
+## Multiple clusters
 
-### `port-forward <service>`
-
-Creates a port-forward to a cluster service. Supported services:
-
-- **openbao** — Verifies all Flux kustomizations are ready, displays the OpenBao root token, then forwards `localhost:8200` to the OpenBao service.
+Clusters are named entries in the config. Select one with `-c/--cluster` or
+`leptostack config use-context <name>`; list them with `get clusters`.
 
 ```bash
-leptostack port-forward openbao
+leptostack config init --cluster devops --provider vcluster ...   # adds a named cluster
+leptostack start -c local          # minikube
+leptostack start -c devops         # vcluster on the host cluster — runs concurrently
+leptostack get clusters            # both clusters, live state
 ```
 
-### `version`
+State is per cluster under `$XDG_RUNTIME_DIR/leptostack/<cluster>/` (port-forward
+PID/state/log files and the cached vcluster context), so two clusters never
+collide on bookkeeping. DNS rules are per cluster
+(`/etc/NetworkManager/dnsmasq.d/leptostack-<cluster>.conf`). The internal CA is
+shared host-wide, so `ca install` stays a once-per-host action. Local ports are
+the one true collision: two live clusters cannot both bind `5432`, so
+`port-forward` fails fast and `--local-port`/`--address` resolve it.
 
-Prints the installed leptostack version:
+## Phase 2: repository automation
+
+The GitOps repository is optional to specify up front. During `config init` the
+repository prompt defaults to **`auto`**:
 
 ```bash
-leptostack version
-# leptostack 0.1.0
+leptostack config init          # press Enter at the repository prompt to accept "auto"
 ```
+
+With `auto`, no repository details are stored yet. On `leptostack start` the
+repository is created and the config is updated with the real values:
+
+1. verifies the CLI for the selected Git server — `gh` (github), `fj`
+   (gitea/forgejo), `glab` (gitlab) — and fails with exit code 4 if it is
+   missing;
+2. creates a uniquely named repository (`<cluster>-gitops`) under your personal
+   account, **never replacing an existing one** (generated names are probed
+   until unused);
+3. mints a **push/pull** token scoped to the new repository;
+4. mints a **read-only** token covering the cluster-template and leptostack-base
+   repositories;
+5. writes the owner, repository and tokens into the config (`git.pat`,
+   `template.pat`) and continues with the template sync and Flux bootstrap.
+
+To use an existing repository instead, pass its URL and skip the automation:
+
+```bash
+leptostack config init --repo-url https://github.com/me/my-gitops
+```
+
+Token minting is capability-aware, because the hosts differ:
+
+| Server | CLI | Repository | Push/pull token | Read-only token |
+|---|---|---|---|---|
+| `github` | `gh` | `gh api` | reuses the logged-in `gh` token (GitHub cannot mint PATs) | same token |
+| `gitea` | `fj` | `fj repo create` | Forgejo API, scoped `read:repository,write:repository` | Forgejo API, scoped `read:repository` |
+| `gitlab` | `glab` | `glab api` | `glab token create` project token (`write_repository`) | group token (`read_repository`), or per-project tokens when namespaces differ |
+
+Forgejo/Gitea cannot mint tokens through `fj`, so the API path needs a
+management token available to `start`:
+
+```bash
+export LEPTOSTACK_FORGE_TOKEN=...   # a Forgejo token allowed to create user tokens
+leptostack start
+```
+
+For GitHub the automation reuses the `gh` CLI's token (it must carry the `repo`
+scope) and notes that GitHub does not support minting PATs non-interactively.
+
+## Flux sources and secrets
+
+Adding a source is one validated command instead of hand-written YAML:
+
+```bash
+# Private Helm chart for a module under development
+leptostack create secret git helm-private --username me --password-stdin < token.txt
+leptostack create source helm my-charts --url https://charts.example.com --secret-ref helm-private
+
+# Second GitRepository for a fork of the cluster template
+leptostack create source git fork --url https://github.com/me/cluster-template-fork.git \
+  --branch dev --interval 1m --git
+
+# Inspect and clean up
+leptostack get sources --type helm
+leptostack get secrets -n flux-system          # values redacted by default
+leptostack delete source git/fork --git
+```
+
+Two storage modes exist: `--direct` (default) applies the manifest to the
+cluster immediately, while `--git` writes it into the GitOps repository and
+pushes it. Secrets are **always** applied to the cluster and are never written to
+the repository; `--password-stdin` keeps credentials off the command line. The
+CLI knows the canonical key names per kind and validates `--secret-ref` against
+existing secrets at creation time. `--dry-run` prints the exact manifest.
+
+## Enable/disable kustomizations
+
+`enable`/`disable` set Flux's `spec.suspend` (the mechanism behind `flux
+suspend`/`resume`), addressed by name or `all`:
+
+```bash
+leptostack disable kustomization local-module-company   # pause a heavy module
+leptostack disable kustomization all                    # pause everything (excludes flux-system)
+leptostack enable kustomization all                     # restore
+```
+
+Disabled kustomizations keep their applied objects; Flux suspends
+*reconciliation*, not resources. Suspended state is surfaced in
+`get kustomizations` and `status`. This is a cluster-side override: a redeploy
+from Git (`sync cluster`, `delete`) restores the committed state.
 
 ## Configuration
 
-All configuration is stored at `~/.config/leptostack/config` (mode `600`). It includes:
+The typed YAML config lives at `$LEPTOSTACK_CONFIG` (default
+`~/.config/leptostack/config.yaml`, mode `0600`):
 
-| Variable | Description |
-|----------|-------------|
-| `GIT_SERVER` | Git provider: `github`, `gitea`, or `gitlab` |
-| `GIT_PAT` | Personal Access Token for the Git server |
-| `GIT_HOSTNAME` | Hostname of the Git server |
-| `GIT_OWNER` | Repository owner/organization |
-| `GIT_REPO` | Repository name |
-| `GIT_BRANCH` | Branch to bootstrap from |
-| `CLUSTER_PATH` | Path within the repo to the cluster manifests (default: `clusters/<CLUSTER_NAME>`) |
-| `CLUSTER_PROVIDER` | Cluster provider: `minikube` or `vcluster` (default: `minikube`) |
-| `CLUSTER_NAME` | Cluster name; the minikube context/profile is derived as `leptostack-<CLUSTER_NAME>` (default: `local`) |
-| `LEPTOSTACK_NAME` | LeptoStack name used in resource names (default: `portal`) |
-| `LEPTOSTACK_DOMAIN` | Domain served by the cluster (default: `<user>-leptostack.test`) |
-| `HOST_CONTEXT` | Host Kubernetes context for the vcluster (vcluster only) |
-| `HOST_NAMESPACE` | Host namespace for the vcluster (vcluster only; default: current user) |
-| `DNS_TARGET_IP` | Fallback host ingress/load-balancer address for `update-dns` when the vcluster `apisix-gateway` load-balancer IP cannot be read (vcluster only) |
-| `VCLUSTER_CONTEXT` | Auto-managed: the exact kubectl context name vcluster generated (vcluster only; recorded on create/connect, not meant to be edited) |
-| `MINIKUBE_CPUS` | Number of CPUs allocated to minikube (minikube only) |
-| `MINIKUBE_MEMORY` | Memory in MB allocated to minikube (minikube only) |
-| `TEMPLATE_GIT_URL` | Git repository used as the cluster template (default: `https://github.com/leptostack-fluxcd/cluster-template.git`) |
-| `TEMPLATE_GIT_BRANCH` | Branch of the cluster template to sync from (default: `main`) |
-| `MODULE_REGISTRY_REPOSITORY` | Container registry repository used as the secret key, e.g. `ghcr.io` (default: `ghcr.io`) |
-| `MODULE_REGISTRY_CREDENTIALS` | Registry credentials in `user:pass` form, pushed to OpenBao `static/common/registry` on `start` |
+```yaml
+apiVersion: v1
+kind: LeptostackConfig
+current-context: local
+
+clusters:
+  local:
+    provider: minikube
+    clusterName: local
+    leptostackName: portal
+    domain: alice-leptostack.test
+    minikube:
+      cpus: 8
+      memoryMB: 24576
+  devops:
+    provider: vcluster
+    clusterName: devops
+    leptostackName: devops
+    domain: devops-minikube.test
+    vcluster:
+      hostContext: kind-baremetal
+      hostNamespace: alice
+
+git:
+  server: github            # github | gitea | gitlab
+  hostname: ""
+  owner: micronisus
+  repository: leptostack-fluxcd
+  branch: main
+  clusterPath: clusters/{cluster}
+  # pat: read from LEPTOSTACK_GIT_PAT when absent
+
+registry:
+  repository: ghcr.io
+  # credentials: user:pass — from LEPTOSTACK_REGISTRY_CREDENTIALS when absent
+
+template:
+  url: https://github.com/leptostack-fluxcd/cluster-template.git
+  branch: main
+
+preferences:
+  autoUpgradeCheck: true
+```
+
+- **Required keys and enums are validated.** Invalid config fails fast with exit
+  code 3 and a message naming the exact key path.
+- **Secrets via env first.** `LEPTOSTACK_GIT_PAT`,
+  `LEPTOSTACK_REGISTRY_CREDENTIALS` and `LEPTOSTACK_TEMPLATE_PAT` (or
+  `RESOURCES_GIT_PAT`) take precedence over the file, so CI never writes secrets
+  to disk. `config view` redacts them unless `--show-secrets`.
+- **No code execution.** Unlike the shell config, the YAML cannot execute
+  anything when loaded.
+- **Config commands:** `config init` (wizard, `--non-interactive`, `--from-file`),
+  `config view [--show-secrets]`, `config set <key> <value> [--secret]`,
+  `config unset <key>`, `config use-context <cluster>`.
+
+## Migrating from the shell CLI
+
+On first run, if `~/.config/leptostack/config` (the old KV file) exists and no
+YAML config does, it is imported as a single cluster named after its
+`CLUSTER_NAME` value and set as `current-context`. The original file is kept.
+Single-cluster users notice nothing.
+
+Old commands work as deprecated aliases (a one-line hint is printed to stderr):
+
+| Old command | New command |
+|---|---|
+| `configure` | `config init` |
+| `reset` | `delete` |
+| `reconnect` | `connect` |
+| `rebootstrap` | `bootstrap` |
+| `reconcile` | `reconcile kustomization flux-system --with-source` |
+| `update-flux` | `sync flux` |
+| `events` | `get events -w` |
+| `update-dns` | `dns update` |
+| `add-trust` | `ca install` |
+| `set-registry-creds` | `registry set-credentials` |
+| `get-context` | `get context -o name` |
+| `port-forward <svc>` | foreground by default; `-d` detaches |
+| `port-forward all` / `port-forward stop` | `port-forward all` / `delete port-forward --all` |
+
+Fallback during migration: if `leptostack` is unavailable, `get-context` can be
+replaced by `leptostack get context -o name`.
+
+## Development
+
+```bash
+make build      # build with version/commit/date ldflags
+make test       # tests
+make test-race  # tests with the race detector
+make vet        # go vet
+make lint       # golangci-lint
+make ci         # exactly what CI runs (format/vet/build/test/shellcheck)
+```
+
+Tests use a fake-binary harness (`internal/testutil`): shim scripts for
+`kubectl`, `flux`, `minikube`, `vcluster` and `git` record their argv and emit
+canned responses, so command orchestration, provider branches and error paths
+are covered without a real cluster. See `cmd/cmd_test.go`.
+
+The repository layout follows the RFC: cobra commands in `cmd/`, and focused
+packages under `internal/` (`config`, `kubernetes`, `flux`, `providers`,
+`gitops`, `sources`, `secrets`, `kustomizations`, `ca`, `dns`, `portforward`,
+`registry`, `execx`, `upgrade`, `ui`, `version`).
+
+## CI/CD
+
+The pipeline runs on **both GitHub Actions and Forgejo Actions** from a single
+source of truth: portable scripts under `scripts/` that the workflow files only
+wrap. Nothing in the scripts depends on a forge-specific action, so one change
+covers both platforms.
+
+```text
+scripts/
+  ci.sh       # gofmt check, go vet, go build, go test -race, shellcheck, optional golangci-lint
+  release.sh  # build all platform artifacts with GoReleaser, then publish to the running forge
+
+.github/workflows/    # GitHub Actions: ci.yml, release.yml
+.forgejo/workflows/   # Forgejo Actions: ci.yml, release.yml
+```
+
+- **CI** (`ci.yml`, on push and pull requests): checks out the repo, sets up Go,
+  and runs `bash scripts/ci.sh`. Run it locally with `make ci`.
+- **Release** (`release.yml`, on `v*` tags): checks out with full history,
+  installs GoReleaser from the Go module proxy, builds archives + `checksums.txt`
+  for linux/darwin/windows × amd64/arm64, stages `leptostack.sh` +
+  `leptostack.sh.sha256`, and publishes the release. Run it locally with
+  `RELEASE_VERSION=x.y.z make release`.
+
+`scripts/release.sh` detects the forge and publishes accordingly:
+
+| Forge | Detection | Publisher | Token |
+|---|---|---|---|
+| GitHub | `GITHUB_ACTIONS=true` and `GITHUB_SERVER_URL` is github.com | `gh release create`/`upload` | `GH_TOKEN` / `GITHUB_TOKEN` |
+| Forgejo / Gitea | otherwise (Forgejo Actions) | REST API via `curl` + `jq` | `FORGEJO_TOKEN` / `GITEA_TOKEN` / `GITHUB_TOKEN` |
+
+Forgejo Actions resolves `actions/checkout` and `actions/setup-go` through its
+action proxy (`code.forgejo.org/actions/*`); if an instance cannot resolve the
+`actions/` prefix, replace the `uses:` values with the fully qualified
+`https://code.forgejo.org/actions/...@vN` form. The release job needs `curl` and
+`jq` on the runner (both are present on `ubuntu-latest` images).

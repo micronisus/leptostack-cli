@@ -1,0 +1,174 @@
+// Package config implements the typed, validatable, multi-cluster YAML
+// configuration file, its migration from the legacy bash KV file, secret
+// redaction and environment-variable overrides.
+package config
+
+// Kind and APIVersion identify the config document.
+const (
+	APIVersion = "v1"
+	Kind       = "LeptostackConfig"
+)
+
+// Provider identifiers.
+const (
+	ProviderMinikube = "minikube"
+	ProviderVCluster = "vcluster"
+)
+
+// Git server identifiers.
+const (
+	ServerGitHub = "github"
+	ServerGitea  = "gitea"
+	ServerGitLab = "gitlab"
+)
+
+// Config is the root of the configuration document.
+type Config struct {
+	APIVersion     string              `json:"apiVersion"`
+	Kind           string              `json:"kind"`
+	CurrentContext string              `json:"current-context,omitempty"`
+	Clusters       map[string]*Cluster `json:"clusters,omitempty"`
+	Git            *Git                `json:"git,omitempty"`
+	Registry       *Registry           `json:"registry,omitempty"`
+	Template       *Template           `json:"template,omitempty"`
+	Preferences    *Preferences        `json:"preferences,omitempty"`
+}
+
+// Cluster is one named cluster entry.
+type Cluster struct {
+	Provider       string    `json:"provider"`
+	ClusterName    string    `json:"clusterName,omitempty"`
+	LeptostackName string    `json:"leptostackName,omitempty"`
+	Domain         string    `json:"domain,omitempty"`
+	Minikube       *Minikube `json:"minikube,omitempty"`
+	VCluster       *VCluster `json:"vcluster,omitempty"`
+	Git            *Git      `json:"git,omitempty"`
+	Registry       *Registry `json:"registry,omitempty"`
+	Template       *Template `json:"template,omitempty"`
+}
+
+// Minikube holds minikube-specific settings.
+type Minikube struct {
+	CPUs     int `json:"cpus,omitempty"`
+	MemoryMB int `json:"memoryMB,omitempty"`
+}
+
+// VCluster holds vcluster-specific settings. The generated kubectl context is
+// runtime state cached per cluster under the runtime dir, not configuration.
+type VCluster struct {
+	HostContext   string `json:"hostContext,omitempty"`
+	HostNamespace string `json:"hostNamespace,omitempty"`
+}
+
+// Git holds the GitOps repository configuration.
+type Git struct {
+	Server      string `json:"server,omitempty"`
+	Hostname    string `json:"hostname,omitempty"`
+	Owner       string `json:"owner,omitempty"`
+	Repository  string `json:"repository,omitempty"`
+	Branch      string `json:"branch,omitempty"`
+	ClusterPath string `json:"clusterPath,omitempty"`
+	PAT         string `json:"pat,omitempty"`
+}
+
+// Registry holds the module image registry configuration.
+type Registry struct {
+	Repository  string `json:"repository,omitempty"`
+	Credentials string `json:"credentials,omitempty"`
+}
+
+// Template identifies the cluster template repository.
+type Template struct {
+	URL    string `json:"url,omitempty"`
+	Branch string `json:"branch,omitempty"`
+	PAT    string `json:"pat,omitempty"`
+}
+
+// Preferences holds user preferences.
+type Preferences struct {
+	AutoUpgradeCheck *bool `json:"autoUpgradeCheck,omitempty"`
+}
+
+// Resolved is the merged, per-cluster view used by commands. Per-cluster values
+// win over global values, which win over defaults; environment variables
+// override secrets.
+type Resolved struct {
+	Name            string
+	Provider        string
+	ClusterName     string
+	LeptostackName  string
+	Domain          string
+	Minikube        Minikube
+	VCluster        VCluster
+	Git             Git
+	Registry        Registry
+	Template        Template
+	MinikubeProfile string
+	KubeContext     string
+	HostNamespace   string
+	// AutoRepo is true when the GitOps repository is the "auto" sentinel and
+	// has not yet been materialized by the forge on start.
+	AutoRepo bool
+}
+
+// Clone returns a deep copy of the config.
+func (c *Config) Clone() *Config {
+	if c == nil {
+		return nil
+	}
+	out := *c
+	if c.Clusters != nil {
+		out.Clusters = make(map[string]*Cluster, len(c.Clusters))
+		for k, v := range c.Clusters {
+			out.Clusters[k] = v.clone()
+		}
+	}
+	if c.Git != nil {
+		g := *c.Git
+		out.Git = &g
+	}
+	if c.Registry != nil {
+		r := *c.Registry
+		out.Registry = &r
+	}
+	if c.Template != nil {
+		t := *c.Template
+		out.Template = &t
+	}
+	if c.Preferences != nil {
+		p := *c.Preferences
+		out.Preferences = &p
+	}
+	return &out
+}
+
+// Clone returns a deep copy of the cluster entry.
+func (cl *Cluster) Clone() *Cluster { return cl.clone() }
+
+func (cl *Cluster) clone() *Cluster {
+	if cl == nil {
+		return nil
+	}
+	out := *cl
+	if cl.Minikube != nil {
+		m := *cl.Minikube
+		out.Minikube = &m
+	}
+	if cl.VCluster != nil {
+		v := *cl.VCluster
+		out.VCluster = &v
+	}
+	if cl.Git != nil {
+		g := *cl.Git
+		out.Git = &g
+	}
+	if cl.Registry != nil {
+		r := *cl.Registry
+		out.Registry = &r
+	}
+	if cl.Template != nil {
+		t := *cl.Template
+		out.Template = &t
+	}
+	return &out
+}

@@ -7,16 +7,18 @@ on:
   pull_request:
 
 jobs:
-  lint:
+  ci:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install shellcheck
-        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
 
-      - name: Syntax check
-        run: bash -n leptostack.sh
+      - name: Install golangci-lint (optional)
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.62.2
+        continue-on-error: true
 
-      - name: Shellcheck lint
-        run: shellcheck -S warning leptostack.sh
+      - name: Run CI
+        run: bash scripts/ci.sh

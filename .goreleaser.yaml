@@ -1,0 +1,51 @@
+# GoReleaser configuration for the leptostack binary.
+# Archives are named leptostack_<os>_<arch>.tar.gz so `leptostack upgrade` and
+# install.sh can locate and verify them.
+version: 2
+
+project_name: leptostack
+
+builds:
+  - id: leptostack
+    main: .
+    binary: leptostack
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/micronisus/leptostack-cli/internal/version.Version={{ .Version }}
+      - -X github.com/micronisus/leptostack-cli/internal/version.Commit={{ .Commit }}
+      - -X github.com/micronisus/leptostack-cli/internal/version.Date={{ .Date }}
+
+archives:
+  - id: leptostack
+    ids:
+      - leptostack
+    formats:
+      - tar.gz
+    name_template: "leptostack_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  draft: false
+  prerelease: auto
