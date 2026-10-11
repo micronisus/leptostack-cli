@@ -149,9 +149,14 @@ func applyCASecret(ctx context.Context, app *cli.App, r *config.Resolved, kube *
 	if err := kustomizations.WaitReady(ctx, kube, "cert-manager", app.Timeout(defaultReadyTimeout), progressLogger(app, "cert-manager")); err != nil {
 		return err
 	}
-	_ = kube.RunDiscard(ctx, "delete", "certificate", "internal-ca", "-n", "cert-manager", "--ignore-not-found")
 
-	app.IO.Errln("Creating the internal-ca-secret TLS secret in the cert-manager namespace...")
+	if err := ensureCertificateRemoved(ctx, app, kube); err != nil {
+		return err
+	}
+	// Drop any cert-manager-generated secret before installing the provided CA.
+	_ = kube.RunDiscard(ctx, "delete", "secret", "internal-ca-secret", "-n", "cert-manager", "--ignore-not-found")
+
+	app.IO.Errln("Installing the provided CA as the internal-ca-secret TLS secret in the cert-manager namespace...")
 	dry, err := kube.Output(ctx,
 		"create", "secret", "tls", "internal-ca-secret",
 		"--cert="+store.CertFile, "--key="+store.KeyFile,
@@ -164,6 +169,22 @@ func applyCASecret(ctx context.Context, app *cli.App, r *config.Resolved, kube *
 	}
 	app.IO.Errln("  Secret internal-ca-secret applied.")
 	return nil
+}
+
+func ensureCertificateRemoved(ctx context.Context, app *cli.App, kube *kubernetes.Client) error {
+	for attempt := 0; attempt < 6; attempt++ {
+		if _, err := kube.OutputCombined(ctx, "get", "certificate", "internal-ca", "-n", "cert-manager"); err != nil {
+			return nil // gone
+		}
+		_ = kube.RunDiscard(ctx, "delete", "certificate", "internal-ca", "-n", "cert-manager", "--ignore-not-found")
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(3 * time.Second):
+		}
+	}
+	return cli.Exitf(cli.ExitFailure,
+		"certificate cert-manager/internal-ca keeps being recreated: the infra-config delete patch is missing from the GitOps repository; run 'leptostack sync cluster --force' (or 'leptostack delete') and retry")
 }
 
 func uploadRegistryCredentials(ctx context.Context, app *cli.App, r *config.Resolved, kube *kubernetes.Client) error {

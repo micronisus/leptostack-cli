@@ -26,49 +26,62 @@ func renameExampleReferences(path, clusterName string) error {
 	return os.WriteFile(path, []byte(s), 0o644)
 }
 
+// internalCADeletePatch is the /spec/patches entry that deletes the template's
+// self-signed internal-ca Certificate so cert-manager stops (re)generating the
+// internal CA — the CLI provides internal-ca-secret instead.
+var internalCADeletePatch = []string{
+	"          - target:",
+	"              group: cert-manager.io",
+	"              version: v1",
+	"              kind: Certificate",
+	"              name: internal-ca",
+	"              namespace: cert-manager",
+	"            patch: |",
+	"              $patch: delete",
+	"              apiVersion: cert-manager.io/v1",
+	"              kind: Certificate",
+	"              metadata:",
+	"                name: internal-ca",
+	"                namespace: cert-manager",
+}
+
 // addInternalCADeletePatch inserts a patch deleting the self-signed internal-ca
-// Certificate into the infra-config Kustomization. It returns whether it
-// changed the file.
+// Certificate into the infra-config Kustomization's /spec/patches value (the
+// Kustomization that owns the Certificate). It returns whether it changed the
+// file.
 func addInternalCADeletePatch(path string) (bool, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return false, err
 	}
 	content := string(b)
-	if strings.Contains(content, "name: internal-ca") {
+	if hasInternalCADelete(content) {
 		return false, nil
 	}
-	const marker = `path: "/spec/patches"`
-	if !strings.Contains(content, marker) {
-		return false, nil
-	}
+
 	lines := strings.Split(content, "\n")
-	out := make([]string, 0, len(lines)+10)
+	out := make([]string, 0, len(lines)+len(internalCADeletePatch))
 	inserted := false
+	inInfraConfig := false
 	armed := false
-	block := []string{
-		"          - target:",
-		"              group: cert-manager.io",
-		"              version: v1",
-		"              kind: Certificate",
-		"              name: internal-ca",
-		"              namespace: cert-manager",
-		"            patch: |",
-		"              $patch: delete",
-		"              apiVersion: cert-manager.io/v1",
-		"              kind: Certificate",
-		"              metadata:",
-		"                name: internal-ca",
-		"                namespace: cert-manager",
-	}
 	for _, line := range lines {
 		out = append(out, line)
-		if !inserted && strings.Contains(line, marker) {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trimmed, "- target:"):
+			inInfraConfig = false
+		case trimmed == "name: infra-config":
+			inInfraConfig = true
+		}
+		if !inInfraConfig || inserted {
+			continue
+		}
+		if !armed && strings.HasPrefix(trimmed, "path:") && strings.Contains(trimmed, "/spec/patches") {
 			armed = true
 			continue
 		}
-		if armed && strings.Contains(line, "value:") {
-			out = append(out, block...)
+		if armed && trimmed == "value:" {
+			out = append(out, internalCADeletePatch...)
 			inserted = true
 			armed = false
 		}
@@ -77,6 +90,18 @@ func addInternalCADeletePatch(path string) (bool, error) {
 		return false, nil
 	}
 	return true, os.WriteFile(path, []byte(strings.Join(out, "\n")), 0o644)
+}
+
+// hasInternalCADelete reports whether the delete patch is already present. It
+// matches the Certificate name exactly so the template's "name: internal-ca-bundle"
+// Bundle patch is not mistaken for it.
+func hasInternalCADelete(content string) bool {
+	for _, line := range strings.Split(content, "\n") {
+		if strings.TrimSpace(line) == "name: internal-ca" {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Manager) generateClusterConfig(ctx context.Context, repoDir string) error {

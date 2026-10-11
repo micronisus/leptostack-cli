@@ -93,3 +93,95 @@ func TestGenerateClusterConfigMinikubeCreatesRegistryIngress(t *testing.T) {
 		t.Fatalf("minikube infra kustomization must reference cluster-config.yaml:\n%s", infra)
 	}
 }
+
+const templateClusterKustomization = `apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+    - flux-system
+    - ../../infrastructure
+    - ../../apps/leptostack/overlays/example
+
+patches:
+  - target:
+      kind: Kustomization
+      name: keycloak-crd
+      namespace: flux-system
+    patch: |-
+      - op: add
+        path: "/spec/patches"
+        value:
+          - target:
+              group: rbac.authorization.k8s.io
+              version: v1
+              kind: ClusterRoleBinding
+              name: keycloak-operator-clusterrole-binding
+            patch: |
+              - op: add
+                path: "/subjects"
+                value:
+                  - kind: ServiceAccount
+                    name: keycloak-operator
+                    namespace: example-keycloak
+  - target:
+      kind: Kustomization
+      name: infra-config
+      namespace: flux-system
+    patch: |-
+      - op: add
+        path: "/spec/patches"
+        value:
+          - target:
+              group: trust.cert-manager.io
+              version: v1alpha1
+              kind: Bundle
+              name: internal-ca-bundle
+            patch: |
+              - op: add
+                path: "/spec/target/namespaceSelector"
+                value:
+                  matchExpressions:
+                    - key: app.kubernetes.io/part-of
+                      operator: In
+                      values:
+                        - leptostack-example
+                        - leptostack-module-example
+`
+
+func TestAddInternalCADeletePatchTargetsInfraConfig(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "kustomization.yaml")
+	if err := os.WriteFile(p, []byte(templateClusterKustomization), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := addInternalCADeletePatch(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("expected the delete patch to be added (the internal-ca-bundle name must not block it)")
+	}
+
+	out, _ := os.ReadFile(p)
+	s := string(out)
+	idx := func(sub string) int { return strings.Index(s, sub) }
+	iKeycloak, iInfra := idx("name: keycloak-crd"), idx("name: infra-config")
+	iDelete, iBundle := idx("$patch: delete"), idx("name: internal-ca-bundle")
+	if iInfra < 0 || iDelete < 0 || iBundle < 0 {
+		t.Fatalf("missing markers (infra=%d delete=%d bundle=%d):\n%s", iInfra, iDelete, iBundle, s)
+	}
+	if !(iInfra < iDelete && iDelete < iBundle) {
+		t.Fatalf("delete patch must be inserted under infra-config before the Bundle patch:\n%s", s)
+	}
+	if strings.Contains(s[iKeycloak:iInfra], "$patch: delete") {
+		t.Fatalf("delete patch must not land under keycloak-crd:\n%s", s)
+	}
+
+	changedAgain, err := addInternalCADeletePatch(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changedAgain {
+		t.Fatal("second run must be idempotent")
+	}
+}
