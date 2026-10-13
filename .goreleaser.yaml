@@ -1,6 +1,6 @@
 # GoReleaser configuration for the leptostack binary.
-# Archives are named leptostack_<os>_<arch>.tar.gz so `leptostack upgrade` and
-# install.sh can locate and verify them.
+# Archives are named leptostack_<os>_<arch>.tar.gz (leptostack_<os>_<arch>.zip on
+# Windows) so `leptostack upgrade` and the installers can locate and verify them.
 version: 2
 
 project_name: leptostack
@@ -30,6 +30,10 @@ archives:
       - leptostack
     formats:
       - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
     name_template: "leptostack_{{ .Os }}_{{ .Arch }}"
     files:
       - README.md

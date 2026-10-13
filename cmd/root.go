@@ -9,11 +9,14 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/micronisus/leptostack-cli/internal/cli"
+	"github.com/micronisus/leptostack-cli/internal/upgrade"
 	"github.com/micronisus/leptostack-cli/internal/version"
 )
 
 // Execute builds and runs the root command, returning the process exit code.
 func Execute() int {
+	// Remove a leftover binary from a previous Windows self-upgrade.
+	upgrade.CleanupOld()
 	build := version.Get()
 	streams := cli.NewIOStreams(os.Stdin, os.Stdout, os.Stderr)
 	flags := &cli.GlobalFlags{}

@@ -4,6 +4,7 @@ package upgrade
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -120,6 +121,7 @@ func Check(ctx context.Context, configDir, current string, refresh bool) (string
 
 // Run downloads and installs the latest release.
 func Run(ctx context.Context, io *cli.IOStreams, current string) error {
+	CleanupOld()
 	io.Errln("Checking for the latest version...")
 	rel, err := fetchRelease(ctx)
 	if err != nil {
@@ -134,7 +136,7 @@ func Run(ctx context.Context, io *cli.IOStreams, current string) error {
 		return nil
 	}
 
-	url, err := assetURL(rel, assetName())
+	url, err := assetURL(rel, assetName(runtime.GOOS, runtime.GOARCH))
 	if err != nil {
 		return err
 	}
@@ -166,18 +168,36 @@ func Run(ctx context.Context, io *cli.IOStreams, current string) error {
 	self, _ = filepath.EvalSymlinks(self)
 	tmp := self + ".new"
 	if err := os.WriteFile(tmp, bin, 0o755); err != nil {
-		return fmt.Errorf("writing new binary (try running with sudo if %s is not writable): %w", self, err)
+		return fmt.Errorf("writing new binary (try running with elevated permissions if %s is not writable): %w", self, err)
 	}
-	if err := os.Rename(tmp, self); err != nil {
+	if err := replaceExecutable(tmp, self); err != nil {
 		_ = os.Remove(tmp)
-		return fmt.Errorf("replacing %s: %w", self, err)
+		return err
 	}
 	io.Errf("Updated leptostack to v%s. Re-run your command.\n", latest)
 	return nil
 }
 
-func assetName() string {
-	return fmt.Sprintf("leptostack_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
+// CleanupOld removes a leftover ".old" binary from a previous Windows upgrade.
+// It is safe to call on every start and is a no-op when there is nothing to
+// clean or on platforms that replace the binary atomically.
+func CleanupOld() {
+	self, err := os.Executable()
+	if err != nil {
+		return
+	}
+	self, _ = filepath.EvalSymlinks(self)
+	_ = os.Remove(self + ".old")
+}
+
+// assetName returns the release archive name for a platform. Windows ships a
+// .zip (so install.ps1/upgrade avoid tar), every other platform a .tar.gz.
+func assetName(goos, goarch string) string {
+	ext := ".tar.gz"
+	if goos == "windows" {
+		ext = ".zip"
+	}
+	return fmt.Sprintf("leptostack_%s_%s%s", goos, goarch, ext)
 }
 
 func assetURL(rel *release, name string) (string, error) {
@@ -250,10 +270,31 @@ func verifyChecksum(ctx context.Context, data []byte, sumsURL, assetName string)
 	return fmt.Errorf("no checksum entry for %s", assetName)
 }
 
+// extractBinary returns the leptostack binary from a release archive. It
+// dispatches on the archive extension; an unknown extension is treated as a raw
+// binary for forward compatibility.
 func extractBinary(data []byte, name string) ([]byte, error) {
-	if !strings.HasSuffix(name, ".tar.gz") {
+	lower := strings.ToLower(name)
+	switch {
+	case strings.HasSuffix(lower, ".tar.gz"):
+		return extractTarGz(data)
+	case strings.HasSuffix(lower, ".zip"):
+		return extractZip(data)
+	default:
 		return data, nil
 	}
+}
+
+// isBinaryName reports whether a name inside an archive is the leptostack
+// binary ("leptostack" or "leptostack.exe"), ignoring case and any directory
+// prefix.
+func isBinaryName(name string) bool {
+	base := strings.ToLower(filepath.Base(name))
+	return base == "leptostack" || base == "leptostack.exe"
+}
+
+// extractTarGz extracts the leptostack binary from a .tar.gz archive.
+func extractTarGz(data []byte) ([]byte, error) {
 	gz, err := gzip.NewReader(bytes.NewReader(data))
 	if err != nil {
 		return nil, err
@@ -268,9 +309,29 @@ func extractBinary(data []byte, name string) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		if hdr.Typeflag == tar.TypeReg && (hdr.Name == "leptostack" || strings.HasSuffix(hdr.Name, "/leptostack")) {
+		if hdr.Typeflag == tar.TypeReg && isBinaryName(hdr.Name) {
 			return io.ReadAll(tr)
 		}
+	}
+	return nil, fmt.Errorf("leptostack binary not found in archive")
+}
+
+// extractZip extracts the leptostack binary from a .zip archive.
+func extractZip(data []byte) ([]byte, error) {
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return nil, err
+	}
+	for _, f := range zr.File {
+		if f.FileInfo().IsDir() || !isBinaryName(f.Name) {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return nil, err
+		}
+		defer rc.Close()
+		return io.ReadAll(rc)
 	}
 	return nil, fmt.Errorf("leptostack binary not found in archive")
 }

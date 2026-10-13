@@ -27,6 +27,7 @@ const AutoRepository = "auto"
 // Environment variable names honored as overrides.
 const (
 	EnvConfigPath          = "LEPTOSTACK_CONFIG"
+	EnvConfigDir           = "LEPTOSTACK_CONFIG_DIR"
 	EnvGitPAT              = "LEPTOSTACK_GIT_PAT"
 	EnvRegistryCredentials = "LEPTOSTACK_REGISTRY_CREDENTIALS"
 	EnvBasePAT             = "LEPTOSTACK_BASE_PAT"
@@ -54,11 +55,6 @@ func HomeDir() string {
 	return "."
 }
 
-// Dir returns the configuration directory (~/.config/leptostack).
-func Dir() string {
-	return filepath.Join(HomeDir(), ".config", "leptostack")
-}
-
 // DefaultPath returns the YAML config path, honoring LEPTOSTACK_CONFIG.
 func DefaultPath() string {
 	if p := os.Getenv(EnvConfigPath); p != "" {
@@ -72,9 +68,19 @@ func LegacyPath() string {
 	return filepath.Join(Dir(), "config")
 }
 
+// username returns the current user's name. Unix shells export USER while
+// Windows sets USERNAME, so both are honored (USER first to keep Unix behavior
+// byte-identical).
+func username() string {
+	if u := os.Getenv("USER"); u != "" {
+		return u
+	}
+	return os.Getenv("USERNAME")
+}
+
 // DefaultDomain returns the default LeptoStack domain (<user>-leptostack.test).
 func DefaultDomain() string {
-	user := os.Getenv("USER")
+	user := username()
 	if user == "" {
 		user = "user"
 	}
@@ -83,7 +89,7 @@ func DefaultDomain() string {
 
 // DefaultHostNamespace returns the default vcluster host namespace (the user).
 func DefaultHostNamespace() string {
-	if ns := os.Getenv("USER"); ns != "" {
+	if ns := username(); ns != "" {
 		return ns
 	}
 	return "default"

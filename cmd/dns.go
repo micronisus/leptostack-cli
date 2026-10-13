@@ -36,9 +36,10 @@ func newDNSUpdateCmd(app *cli.App) *cobra.Command {
 			ctx, cancel := app.Context(clusterWaitTimeout)
 			defer cancel()
 			kube := kubeFor(app, r)
+			dm := newDNSManager(app)
 
 			app.IO.Errln("Configuring DNS for " + r.Domain + "...")
-			if err := newDNSManager(app).EnsurePlugin(ctx); err != nil {
+			if err := dm.EnsurePlugin(ctx); err != nil {
 				return err
 			}
 
@@ -46,10 +47,12 @@ func newDNSUpdateCmd(app *cli.App) *cobra.Command {
 			if target == "" {
 				return cli.Exitf(cli.ExitConfig, "could not determine the DNS target address for %s (apisix-gateway load-balancer IP)", r.Name)
 			}
-			if err := newDNSManager(app).Update(ctx, r.Name, r.Domain, target); err != nil {
+			if err := dm.Update(ctx, r.Name, r.Domain, target); err != nil {
 				return err
 			}
-			app.IO.Errf("DNS configuration updated. *.%s now resolves to %s.\n", r.Domain, target)
+			if dm.Distro == "fedora" || dm.Distro == "arch" {
+				app.IO.Errf("DNS configuration updated. *.%s now resolves to %s.\n", r.Domain, target)
+			}
 			return nil
 		},
 	}
@@ -95,10 +98,13 @@ func newDNSDeleteCmd(app *cli.App) *cobra.Command {
 			}
 			ctx, cancel := app.Context(clusterWaitTimeout)
 			defer cancel()
-			if err := newDNSManager(app).Delete(ctx, r.Name); err != nil {
+			dm := newDNSManager(app)
+			if err := dm.Delete(ctx, r.Name); err != nil {
 				return err
 			}
-			app.IO.Errf("DNS rule for cluster %s removed.\n", r.Name)
+			if dm.Distro == "fedora" || dm.Distro == "arch" {
+				app.IO.Errf("DNS rule for cluster %s removed.\n", r.Name)
+			}
 			return nil
 		},
 	}

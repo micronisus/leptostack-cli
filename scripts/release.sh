@@ -137,4 +137,64 @@ else
   publish_gitea
 fi
 
+# --- container image ---------------------------------------------------------
+
+IMAGE_REPOSITORY="${IMAGE_REPOSITORY:-ghcr.io/leptostack/leptostack-cli}"
+PUBLISH_IMAGE="${PUBLISH_IMAGE:-auto}"
+
+container_runtime() {
+  if command -v docker >/dev/null 2>&1; then echo docker; return 0; fi
+  if command -v podman >/dev/null 2>&1; then echo podman; return 0; fi
+  return 1
+}
+
+is_github_forge() { printf '%s' "${SERVER:-}" | grep -q 'github\.com'; }
+
+publish_image() {
+  case "$PUBLISH_IMAGE" in
+    0|false|no)
+      echo "Skipping container image publish (PUBLISH_IMAGE=$PUBLISH_IMAGE)."
+      return 0 ;;
+    1|true|yes|auto) ;;
+    *) die "invalid PUBLISH_IMAGE=$PUBLISH_IMAGE (use auto|1|0)" ;;
+  esac
+  # In auto mode publish only on github.com (the natural publisher for ghcr.io);
+  # other forges opt in with PUBLISH_IMAGE=1 and registry credentials.
+  if [ "$PUBLISH_IMAGE" = "auto" ] && ! is_github_forge; then
+    echo "Skipping container image publish (auto: github.com only; set PUBLISH_IMAGE=1 to force)."
+    return 0
+  fi
+  local rt
+  if ! rt="$(container_runtime)"; then
+    echo "Warning: no docker/podman available; skipping the container image." >&2
+    return 0
+  fi
+
+  group "Build container image"
+  "$rt" build \
+    --build-arg "VERSION=$VERSION" \
+    --build-arg "COMMIT=${GITHUB_SHA:-$(git rev-parse HEAD)}" \
+    --build-arg "DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    -t "$IMAGE_REPOSITORY:$VERSION" \
+    -t "$IMAGE_REPOSITORY:latest" \
+    .
+  endgroup
+
+  group "Publish container image"
+  local registry user password
+  registry="${IMAGE_REPOSITORY%%/*}"
+  user="${IMAGE_REGISTRY_USER:-${GITHUB_ACTOR:-token}}"
+  password="${IMAGE_REGISTRY_PASSWORD:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}"
+  if [ -n "$password" ]; then
+    printf '%s' "$password" | "$rt" login "$registry" -u "$user" --password-stdin
+  else
+    echo "No registry credentials found; assuming $rt is already logged in to $registry."
+  fi
+  "$rt" push "$IMAGE_REPOSITORY:$VERSION"
+  "$rt" push "$IMAGE_REPOSITORY:latest"
+  endgroup
+}
+
+publish_image
+
 echo "Released $TAG."

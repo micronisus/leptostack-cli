@@ -39,6 +39,29 @@ group "go build"
 go build ./...
 endgroup
 
+# Cross-compile the other supported targets so OS-specific files keep
+# compiling. Windows (amd64) and Darwin (amd64) are also vetted; Windows arm64
+# is build-only to keep the gate fast.
+group "go build (windows/amd64)"
+GOOS=windows GOARCH=amd64 go build ./...
+endgroup
+
+group "go vet (windows/amd64)"
+GOOS=windows GOARCH=amd64 go vet ./...
+endgroup
+
+group "go build (windows/arm64)"
+GOOS=windows GOARCH=arm64 go build ./...
+endgroup
+
+group "go build (darwin/amd64)"
+GOOS=darwin GOARCH=amd64 go build ./...
+endgroup
+
+group "go vet (darwin/amd64)"
+GOOS=darwin GOARCH=amd64 go vet ./...
+endgroup
+
 group "go test -race"
 go test -race ./...
 endgroup

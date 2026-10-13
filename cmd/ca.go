@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"runtime"
 
 	"github.com/spf13/cobra"
 
@@ -88,11 +89,15 @@ func newCAInstallCmd(app *cli.App) *cobra.Command {
 			}
 			d := distro()
 			if d == "" {
-				return cli.Exitf(cli.ExitPrereq, "unsupported Linux distribution; CA install supports Fedora and Arch")
+				return cli.Exitf(cli.ExitPrereq, "unsupported platform %s; CA install supports Fedora, Arch Linux and Windows", runtime.GOOS)
 			}
 			ctx, cancel := app.Context(defaultWaitTimeout)
 			defer cancel()
-			app.IO.Errln("Installing CA certificate to system trust store...")
+			if d == "windows" {
+				app.IO.Errln("Installing CA certificate to the current user's Root store (no elevation required)...")
+			} else {
+				app.IO.Errln("Installing CA certificate to system trust store...")
+			}
 			if err := store.Install(ctx, runner(app), d, r.Domain); err != nil {
 				return err
 			}

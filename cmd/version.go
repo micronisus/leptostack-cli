@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"runtime"
 
 	"github.com/spf13/cobra"
 
@@ -115,7 +116,11 @@ func newDoctorCmd(app *cli.App) *cobra.Command {
 				checks = append(checks, checkTool(ctx, app, "vcluster", "0.37.1", vclusterVersionArgs))
 			} else {
 				checks = append(checks, checkTool(ctx, app, "minikube", "1.38.1", minikubeVersionArgs))
-				checks = append(checks, checkTool(ctx, app, "podman", "", nil))
+				// minikube uses the podman driver only on Linux; Windows uses
+				// the Docker/WSL2/Hyper-V driver and macOS Docker/HyperKit.
+				if runtime.GOOS == "linux" {
+					checks = append(checks, checkTool(ctx, app, "podman", "", nil))
+				}
 			}
 
 			allOK := true

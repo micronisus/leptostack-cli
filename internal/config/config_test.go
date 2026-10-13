@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -122,6 +123,35 @@ func TestRedacted(t *testing.T) {
 	}
 	if cfg.Git.PAT != "secret" {
 		t.Error("original config mutated by Redacted")
+	}
+}
+
+func TestDirHonorsEnvOverride(t *testing.T) {
+	t.Setenv(EnvConfigDir, "/mnt/leptostack-ca")
+	if got := Dir(); got != "/mnt/leptostack-ca" {
+		t.Fatalf("Dir = %q, want the LEPTOSTACK_CONFIG_DIR override", got)
+	}
+	if got := DefaultPath(); got != filepath.Join("/mnt/leptostack-ca", "config.yaml") {
+		t.Fatalf("DefaultPath = %q", got)
+	}
+	if got := LegacyPath(); got != filepath.Join("/mnt/leptostack-ca", "config") {
+		t.Fatalf("LegacyPath = %q", got)
+	}
+}
+
+func TestDirFallsBackWithoutEnvOverride(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix HOME-based default")
+	}
+	t.Setenv(EnvConfigDir, "")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	got := Dir()
+	if got == "" || got == home {
+		t.Fatalf("Dir = %q, expected a path under HOME", got)
+	}
+	if !strings.HasPrefix(got, home) {
+		t.Fatalf("Dir = %q, want it under HOME %q", got, home)
 	}
 }
 

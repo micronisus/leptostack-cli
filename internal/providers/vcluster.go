@@ -116,14 +116,14 @@ func (v *VCluster) Status(ctx context.Context) error {
 	}
 	return v.R.Run(ctx, execx.Cmd{Name: "vcluster", Args: []string{"list",
 		"--context", v.Resolved.VCluster.HostContext,
-		"--namespace", v.Resolved.VCluster.HostNamespace}})
+		"--namespace", v.Resolved.VCluster.HostNamespace}, Env: v.vclusterEnv()})
 }
 
 // Exists reports whether the vcluster statefulset is present on the host.
 func (v *VCluster) Exists(ctx context.Context) bool {
-	out, err := v.R.OutputCombined(ctx, execx.Cmd{Name: "kubectl", Args: []string{
-		"--context", v.Resolved.VCluster.HostContext, "-n", v.Resolved.VCluster.HostNamespace,
-		"get", "statefulset", "-l", fmt.Sprintf("app=vcluster,release=%s", v.Resolved.ClusterName), "-o", "name"}})
+	out, err := v.R.OutputCombined(ctx, execx.Cmd{Name: "kubectl", Args: v.hostKubeArgs(
+		"-n", v.Resolved.VCluster.HostNamespace,
+		"get", "statefulset", "-l", fmt.Sprintf("app=vcluster,release=%s", v.Resolved.ClusterName), "-o", "name")})
 	if err != nil {
 		return false
 	}
@@ -179,7 +179,17 @@ func (v *VCluster) vclusterCmd(args ...string) execx.Cmd {
 	full = append(full,
 		"--namespace", v.Resolved.VCluster.HostNamespace,
 		"--context", v.Resolved.VCluster.HostContext)
-	return execx.Cmd{Name: "vcluster", Args: full}
+	return execx.Cmd{Name: "vcluster", Args: full, Env: v.vclusterEnv()}
+}
+
+// vclusterEnv carries the KUBECONFIG override for vcluster CLI invocations.
+// vcluster v0.37.x has no --kubeconfig flag, so the kubeconfig is propagated
+// through the environment instead.
+func (v *VCluster) vclusterEnv() map[string]string {
+	if v.Kubeconfig == "" {
+		return nil
+	}
+	return map[string]string{"KUBECONFIG": v.Kubeconfig}
 }
 
 // ensureOIDCCASecret publishes the internal CA to the host namespace for the
@@ -189,24 +199,23 @@ func (v *VCluster) ensureOIDCCASecret(ctx context.Context) error {
 		return err
 	}
 	ns := v.Resolved.VCluster.HostNamespace
-	host := v.Resolved.VCluster.HostContext
 
-	if err := v.R.RunDiscard(ctx, execx.Cmd{Name: "kubectl", Args: []string{"--context", host, "get", "namespace", ns}}); err != nil {
+	if err := v.R.RunDiscard(ctx, execx.Cmd{Name: "kubectl", Args: v.hostKubeArgs("get", "namespace", ns)}); err != nil {
 		v.IO.Errf("Creating host namespace %s...\n", ns)
-		if err := v.R.Run(ctx, execx.Cmd{Name: "kubectl", Args: []string{"--context", host, "create", "namespace", ns}}); err != nil {
+		if err := v.R.Run(ctx, execx.Cmd{Name: "kubectl", Args: v.hostKubeArgs("create", "namespace", ns)}); err != nil {
 			return err
 		}
 	}
 
 	secretName := v.Resolved.ClusterName + "-oidc-ca"
 	v.IO.Errf("Publishing the internal CA to host secret %s/%s for the vCluster API server OIDC configuration...\n", ns, secretName)
-	dry, err := v.R.Output(ctx, execx.Cmd{Name: "kubectl", Args: []string{
-		"--context", host, "-n", ns, "create", "secret", "generic", secretName,
-		"--from-file=ca.crt=" + v.CA.CertFile, "--dry-run=client", "-o", "yaml"}})
+	dry, err := v.R.Output(ctx, execx.Cmd{Name: "kubectl", Args: v.hostKubeArgs(
+		"-n", ns, "create", "secret", "generic", secretName,
+		"--from-file=ca.crt="+v.CA.CertFile, "--dry-run=client", "-o", "yaml")})
 	if err != nil {
 		return err
 	}
-	apply := execx.Cmd{Name: "kubectl", Args: []string{"--context", host, "-n", ns, "apply", "-f", "-"}}
+	apply := execx.Cmd{Name: "kubectl", Args: v.hostKubeArgs("-n", ns, "apply", "-f", "-")}
 	apply.Stdin = strings.NewReader(dry)
 	return v.R.RunDiscard(ctx, apply)
 }
@@ -255,6 +264,19 @@ func (v *VCluster) kubeArgs(args ...string) []string {
 	}
 	if v.Resolved.KubeContext != "" {
 		full = append(full, "--context", v.Resolved.KubeContext)
+	}
+	return append(full, args...)
+}
+
+// hostKubeArgs builds a kubectl argv targeting the host cluster, honoring the
+// --kubeconfig override and pinning the configured host context.
+func (v *VCluster) hostKubeArgs(args ...string) []string {
+	full := []string{}
+	if v.Kubeconfig != "" {
+		full = append(full, "--kubeconfig", v.Kubeconfig)
+	}
+	if v.Resolved.VCluster.HostContext != "" {
+		full = append(full, "--context", v.Resolved.VCluster.HostContext)
 	}
 	return append(full, args...)
 }

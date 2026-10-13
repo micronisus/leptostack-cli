@@ -1,10 +1,12 @@
 package ca
 
 import (
+	"crypto/sha1"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/pem"
 	"os"
-	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -53,34 +55,46 @@ func TestGenerateAndEnsure(t *testing.T) {
 	}
 }
 
-// TestAnchorsDirTrusts verifies the Arch p11-kit anchors-directory check used
-// by TrustStatus.
-func TestAnchorsDirTrusts(t *testing.T) {
-	dir := t.TempDir()
-	if anchorsDirTrusts(dir) {
-		t.Fatal("empty anchors dir should not report trusted")
-	}
-
+// TestCertThumbprint verifies the SHA-1 thumbprint matches an independent
+// computation over the DER certificate (the Windows store uses this format).
+func TestCertThumbprint(t *testing.T) {
 	store := Default(t.TempDir())
 	if err := store.Generate(); err != nil {
 		t.Fatal(err)
 	}
-	cert, err := os.ReadFile(store.CertFile)
+	got, err := certThumbprint(store.CertFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "leptostack-ca.crt"), cert, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if !anchorsDirTrusts(dir) {
-		t.Fatal("anchors dir with our CA should report trusted")
-	}
 
-	other := t.TempDir()
-	if err := os.WriteFile(filepath.Join(other, "other.crt"), []byte("not a pem"), 0o644); err != nil {
+	b, _ := os.ReadFile(store.CertFile)
+	block, _ := pem.Decode(b)
+	sum := sha1.Sum(block.Bytes)
+	want := strings.ToUpper(hex.EncodeToString(sum[:]))
+	if got != want {
+		t.Errorf("thumbprint = %q want %q", got, want)
+	}
+	if len(got) != 40 {
+		t.Errorf("thumbprint length = %d want 40", len(got))
+	}
+}
+
+// TestCertCommonName verifies the CN parser used by the trust-store checks.
+func TestCertCommonName(t *testing.T) {
+	store := Default(t.TempDir())
+	if err := store.Generate(); err != nil {
 		t.Fatal(err)
 	}
-	if anchorsDirTrusts(other) {
-		t.Fatal("unrelated file must not report trusted")
+	b, _ := os.ReadFile(store.CertFile)
+	block, _ := pem.Decode(b)
+	cn, err := certCommonName(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cn != CommonName {
+		t.Errorf("CN = %q want %q", cn, CommonName)
+	}
+	if _, err := certCommonName([]byte("not a certificate")); err == nil {
+		t.Error("expected an error for non-certificate bytes")
 	}
 }

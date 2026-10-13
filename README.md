@@ -12,7 +12,7 @@ if you are coming from the older shell scripts.
 
 ## Installation
 
-Install the latest release:
+On Linux and macOS, install the latest release:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/micronisus/leptostack-cli/main/install.sh | sh
@@ -20,6 +20,20 @@ curl -fsSL https://raw.githubusercontent.com/micronisus/leptostack-cli/main/inst
 
 The installer downloads the right archive, verifies its `sha256` against the
 published `checksums.txt`, and installs the binary to `/usr/local/bin`.
+
+On Windows (Windows PowerShell 5.1 or PowerShell 7), install with `install.ps1`:
+
+```powershell
+irm https://raw.githubusercontent.com/micronisus/leptostack-cli/main/install.ps1 | iex
+```
+
+It downloads the `leptostack_windows_<arch>.zip` release asset, verifies its
+`sha256`, installs `leptostack.exe` to `%LOCALAPPDATA%\leptostack\bin`, and adds
+that directory to your **user** PATH (reopen your terminal afterwards). No
+elevation is required.
+
+Color is auto-detected from the terminal; on legacy Windows consoles that do not
+render ANSI escapes, pass `--no-color` (or redirect output) for clean tables.
 
 From source:
 
@@ -41,10 +55,15 @@ leptostack completion powershell | Out-String | Invoke-Expression
 
 ## Prerequisites
 
-- **OS:** Fedora or Arch Linux (for DNS/CA integration). `kubectl`, `git` and
-  `flux >= 2.8.7` are always required.
-- **minikube:** `minikube >= 1.38.1` plus podman. Hardware: minimum 32GB RAM and
-  8 CPU cores (recommended).
+- **OS:** Fedora or Arch Linux give full DNS/CA host integration. Windows 10/11
+  is supported for the core workflow; DNS is guided-only (see
+  [DNS on Windows](#dns-on-windows)) and the CA is installed into the
+  current-user trust store. macOS builds and runs the core workflow but has no
+  DNS/CA host integration. `kubectl`, `git` and `flux >= 2.8.7` are always
+  required.
+- **minikube:** `minikube >= 1.38.1` plus podman on Linux (Windows uses the
+  Docker/WSL2/Hyper-V driver; macOS Docker/HyperKit). Hardware: minimum 32GB RAM
+  and 8 CPU cores (recommended).
 - **vcluster:** `vcluster >= 0.37.1` and access to an existing Kubernetes
   cluster (the *host* cluster). The host must expose an ingress/load-balancer
   address reachable from this machine; `dns update` discovers it from the
@@ -62,6 +81,25 @@ leptostack ca install
 leptostack status
 leptostack stop
 ```
+
+### DNS on Windows
+
+The cluster certificate and APISIX routes cover `*.<domain>`, but Windows has no
+wildcard hosts support and the CLI does not modify the system. `dns update`
+therefore prints ready-to-paste `hosts` lines (the base domain plus the known
+service prefixes `sso`, `che`, `dashboard`, `db`, `design`, `git`, `llm`,
+`registry`, and the `<leptostack-name>-<service>` form when a hostname was
+overridden), the detected gateway IP, and the `ipconfig /flushdns` step. Add them
+to `%SystemRoot%\System32\drivers\etc\hosts` as Administrator. `dns get` reports
+that nothing is managed automatically and `dns delete` prints cleanup guidance;
+neither touches the OS.
+
+### CA trust on Windows
+
+`ca install` runs `certutil -user -addstore -f Root <cert>`, which trusts the CA
+for the current user only (no UAC). `ca status` reports `installed`/`absent` from
+a thumbprint lookup in the current-user Root store. `ca export` and CA
+generation are unchanged.
 
 ## Command grammar
 
@@ -181,11 +219,13 @@ leptostack start -c devops         # vcluster on the host cluster — runs concu
 leptostack get clusters            # both clusters, live state
 ```
 
-State is per cluster under `$XDG_RUNTIME_DIR/leptostack/<cluster>/` (port-forward
-PID/state/log files and the cached vcluster context), so two clusters never
-collide on bookkeeping. DNS rules are per cluster
-(`/etc/NetworkManager/dnsmasq.d/leptostack-<cluster>.conf`). The internal CA is
-shared host-wide, so `ca install` stays a once-per-host action. Local ports are
+State is per cluster under `$XDG_RUNTIME_DIR/leptostack/<cluster>/` on Linux and
+macOS (`%LOCALAPPDATA%\leptostack\<cluster>\` on Windows): port-forward
+PID/state/log files and the cached vcluster context, so two clusters never
+collide on bookkeeping. DNS rules are per cluster on Linux
+(`/etc/NetworkManager/dnsmasq.d/leptostack-<cluster>.conf`); Windows is guided
+only. The internal CA is shared host-wide, so `ca install` stays a
+once-per-host action. Local ports are
 the one true collision: two live clusters cannot both bind `5432`, so
 `port-forward` fails fast and `--local-port`/`--address` resolve it.
 
@@ -283,7 +323,8 @@ from Git (`sync cluster`, `delete`) restores the committed state.
 ## Configuration
 
 The typed YAML config lives at `$LEPTOSTACK_CONFIG` (default
-`~/.config/leptostack/config.yaml`, mode `0600`):
+`~/.config/leptostack/config.yaml` on Linux/macOS and
+`%APPDATA%\leptostack\config.yaml` on Windows, mode `0600`):
 
 ```yaml
 apiVersion: v1
@@ -387,6 +428,11 @@ Tests use a fake-binary harness (`internal/testutil`): shim scripts for
 canned responses, so command orchestration, provider branches and error paths
 are covered without a real cluster. See `cmd/cmd_test.go`.
 
+The harness is POSIX-only (`#!/bin/sh` plus `HOME`/`XDG_RUNTIME_DIR`), so
+`cmd/`/`testutil`-based tests are not run on Windows. The Windows CI job
+compiles, vets and smoke-tests the binary instead, and `scripts/ci.sh`
+cross-compiles and vets `GOOS=windows`/`GOOS=darwin` on every run.
+
 The repository layout follows the RFC: cobra commands in `cmd/`, and focused
 packages under `internal/` (`config`, `kubernetes`, `flux`, `providers`,
 `gitops`, `clustertemplate`, `sources`, `secrets`, `kustomizations`, `ca`, `dns`,
@@ -401,15 +447,19 @@ covers both platforms.
 
 ```text
 scripts/
-  ci.sh       # gofmt check, go vet, go build, go test -race, shellcheck, optional golangci-lint
+  ci.sh       # gofmt check, go vet, go build, windows/darwin cross-build+vet, go test -race, shellcheck, optional golangci-lint
   release.sh  # build all platform artifacts with GoReleaser, then publish to the running forge
 
-.github/workflows/    # GitHub Actions: ci.yml, release.yml
-.forgejo/workflows/   # Forgejo Actions: ci.yml, release.yml
+.github/workflows/    # GitHub Actions: ci.yml (linux + windows), release.yml
+.forgejo/workflows/   # Forgejo Actions: ci.yml, release.yml (linux-only)
 ```
 
 - **CI** (`ci.yml`, on push and pull requests): checks out the repo, sets up Go,
-  and runs `bash scripts/ci.sh`. Run it locally with `make ci`.
+  and runs `bash scripts/ci.sh`, which also cross-compiles and vets the Windows
+  and Darwin targets on the Linux runner. Run it locally with `make ci`. A
+  second **Windows job** on `windows-latest` builds, vets and smoke-tests the
+  binary (`version`, `completion powershell`, `--help`). Forgejo stays
+  Linux-only; its `scripts/ci.sh` run still covers Windows/Darwin compilation.
 - **Release** (`release.yml`, on `v*` tags): checks out with full history,
   installs GoReleaser from the Go module proxy, builds archives + `checksums.txt`
   for linux/darwin/windows × amd64/arm64, and publishes the release. Run it

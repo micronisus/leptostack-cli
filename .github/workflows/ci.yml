@@ -22,3 +22,25 @@ jobs:
 
       - name: Run CI
         run: bash scripts/ci.sh
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          go run . version
+          go run . completion powershell | Out-Null
+          go run . --help

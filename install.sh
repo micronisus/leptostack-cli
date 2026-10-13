@@ -4,7 +4,8 @@
 #   curl -fsSL https://raw.githubusercontent.com/micronisus/leptostack-cli/main/install.sh | sh
 #
 # It downloads the platform archive, verifies it against checksums.txt, and
-# installs the binary to /usr/local/bin (using sudo when needed).
+# installs the binary to /usr/local/bin (using sudo when needed). On Windows
+# (Cygwin/MSYS) it points at install.ps1 instead.
 set -eu
 
 REPO="micronisus/leptostack-cli"
@@ -13,6 +14,13 @@ INSTALL_DIR="${LEPTOSTACK_INSTALL_DIR:-/usr/local/bin}"
 os=$(uname -s | tr '[:upper:]' '[:lower:]')
 case "$os" in
     linux|darwin) ;;
+    msys*|cygwin*|mingw*|windows*)
+        cat >&2 <<'EOF'
+Windows detected. Use the PowerShell installer instead:
+
+  irm https://raw.githubusercontent.com/micronisus/leptostack-cli/main/install.ps1 | iex
+EOF
+        exit 1 ;;
     *) echo "Unsupported OS: $os" >&2; exit 1 ;;
 esac
 
