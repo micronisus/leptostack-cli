@@ -27,9 +27,6 @@ git:
   branch: main
   clusterPath: clusters/{cluster}
   repository: auto
-template:
-  url: https://github.com/leptostack-fluxcd/cluster-template.git
-  branch: main
 `
 
 const ghAutoShim = `echo "gh $*" >> "$FAKE_LOG"
@@ -59,9 +56,6 @@ git:
   repository: auto
   branch: main
   clusterPath: clusters/foo
-template:
-  url: https://github.com/leptostack-fluxcd/cluster-template.git
-  branch: main
 `
 
 func TestConfigInitUsesClusterNameAsKey(t *testing.T) {

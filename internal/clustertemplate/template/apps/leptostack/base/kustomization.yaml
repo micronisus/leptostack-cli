@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - leptostack-config.yaml
+  - apisix.yaml
+  - apisix-internal.yaml
+  - camel-k.yaml
+  - centrifugo.yaml
+  - flowable.yaml
+  - keycloak.yaml
+  - openbao.yaml
+  - pgcluster.yaml
+  - rabbitmq.yaml
+  - seaweedfs.yaml
+  - supabase.yaml
+  - superset.yaml
+  - valkey.yaml
+  - leptostack-operator.yaml
+  - module-core.yaml

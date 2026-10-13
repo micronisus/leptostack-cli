@@ -1,0 +1,43 @@
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: forgejo-pre
+  namespace: flux-system
+spec:
+  interval: 720m0s
+  timeout: 10m
+  dependsOn:
+    - name: keycloak-post
+    - name: pgcluster
+  sourceRef:
+    kind: GitRepository
+    name: leptostack-base
+  path: ./leptostack/forgejo/pre
+  prune: true
+  wait: true
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: leptostack-config
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: forgejo
+  namespace: flux-system
+spec:
+  interval: 720m0s
+  timeout: 10m
+  dependsOn:
+    - name: forgejo-pre
+  sourceRef:
+    kind: GitRepository
+    name: leptostack-base
+  path: ./leptostack/forgejo
+  prune: true
+  wait: true
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: leptostack-config

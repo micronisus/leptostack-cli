@@ -12,7 +12,7 @@ import (
 
 // gitlab provisions repositories and access tokens via the glab CLI. Project
 // access tokens are used for the new repository (push/pull) and a group access
-// token (or per-project tokens) for the read-only template/base repositories.
+// token (or per-project tokens) for the read-only base repository.
 type gitlab struct {
 	r    *execx.Runner
 	opt  Options

@@ -10,8 +10,8 @@ func (c *Config) Redacted() *Config {
 	if out.Registry != nil && out.Registry.Credentials != "" {
 		out.Registry.Credentials = "<redacted>"
 	}
-	if out.Template != nil && out.Template.PAT != "" {
-		out.Template.PAT = "<redacted>"
+	if out.Base != nil && out.Base.PAT != "" {
+		out.Base.PAT = "<redacted>"
 	}
 	for _, cl := range out.Clusters {
 		if cl == nil {
@@ -23,8 +23,8 @@ func (c *Config) Redacted() *Config {
 		if cl.Registry != nil && cl.Registry.Credentials != "" {
 			cl.Registry.Credentials = "<redacted>"
 		}
-		if cl.Template != nil && cl.Template.PAT != "" {
-			cl.Template.PAT = "<redacted>"
+		if cl.Base != nil && cl.Base.PAT != "" {
+			cl.Base.PAT = "<redacted>"
 		}
 	}
 	return out

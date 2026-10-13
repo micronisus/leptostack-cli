@@ -1,0 +1,27 @@
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: leptostack-operator
+  namespace: flux-system
+spec:
+  interval: 720m0s
+  timeout: 10m
+  dependsOn:
+    - name: keycloak-post
+    - name: pgcluster
+    - name: openbao-post
+    - name: rabbitmq
+    - name: seaweedfs
+    - name: supabase
+    - name: valkey
+  sourceRef:
+    kind: GitRepository
+    name: leptostack-base
+  path: ./leptostack/leptostack-operator
+  prune: true
+  wait: true
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: leptostack-config

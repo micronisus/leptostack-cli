@@ -16,8 +16,8 @@ const (
 	DefaultGitServer      = ServerGitHub
 	DefaultRegistryRepo   = "ghcr.io"
 
-	DefaultTemplateURL    = "https://github.com/leptostack-fluxcd/cluster-template.git"
-	DefaultTemplateBranch = "main"
+	DefaultBaseURL    = "https://github.com/leptostack-fluxcd/leptostack-base.git"
+	DefaultBaseBranch = "main"
 )
 
 // AutoRepository is the sentinel repository value that means "create the
@@ -29,7 +29,7 @@ const (
 	EnvConfigPath          = "LEPTOSTACK_CONFIG"
 	EnvGitPAT              = "LEPTOSTACK_GIT_PAT"
 	EnvRegistryCredentials = "LEPTOSTACK_REGISTRY_CREDENTIALS"
-	EnvTemplatePAT         = "LEPTOSTACK_TEMPLATE_PAT"
+	EnvBasePAT             = "LEPTOSTACK_BASE_PAT"
 	EnvResourcesPAT        = "RESOURCES_GIT_PAT"
 	EnvGitServer           = "LEPTOSTACK_GIT_SERVER"
 	EnvGitOwner            = "LEPTOSTACK_GIT_OWNER"
@@ -39,8 +39,8 @@ const (
 	EnvClusterPath         = "LEPTOSTACK_CLUSTER_PATH"
 	EnvDomain              = "LEPTOSTACK_DOMAIN"
 	EnvClusterName         = "LEPTOSTACK_CLUSTER_NAME"
-	EnvTemplateURL         = "LEPTOSTACK_TEMPLATE_GIT_URL"
-	EnvTemplateBranch      = "LEPTOSTACK_TEMPLATE_GIT_BRANCH"
+	EnvBaseURL             = "LEPTOSTACK_BASE_URL"
+	EnvBaseBranch          = "LEPTOSTACK_BASE_BRANCH"
 )
 
 // HomeDir returns the user's home directory, or "." if undeterminable.

@@ -1,0 +1,85 @@
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: openbao
+  namespace: flux-system
+spec:
+  interval: 720m0s
+  timeout: 10m
+  dependsOn:
+    - name: infra-config
+  sourceRef:
+    kind: GitRepository
+    name: leptostack-base
+  path: ./leptostack/openbao
+  prune: true
+  wait: true
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: leptostack-config
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: openbao-init
+  namespace: flux-system
+spec:
+  interval: 720m0s
+  timeout: 10m
+  dependsOn:
+    - name: openbao
+  sourceRef:
+    kind: GitRepository
+    name: leptostack-base
+  path: ./leptostack/openbao/init
+  prune: true
+  wait: true
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: leptostack-config
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: openbao-post
+  namespace: flux-system
+spec:
+  interval: 720m0s
+  timeout: 10m
+  dependsOn:
+    - name: openbao-init
+  sourceRef:
+    kind: GitRepository
+    name: leptostack-base
+  path: ./leptostack/openbao/post
+  prune: true
+  wait: true
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: leptostack-config
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: openbao-oidc
+  namespace: flux-system
+spec:
+  interval: 720m0s
+  timeout: 10m
+  dependsOn:
+    - name: openbao-post
+    - name: keycloak-post
+  sourceRef:
+    kind: GitRepository
+    name: leptostack-base
+  path: ./leptostack/openbao/oidc
+  prune: true
+  wait: true
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: leptostack-config

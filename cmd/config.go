@@ -29,9 +29,9 @@ type initOptions struct {
 	gitServer      string
 	gitPATStdin    bool
 	gitPAT         string
-	resourcesPAT   bool
-	templateURL    string
-	templateBranch string
+	basePAT        bool
+	baseURL        string
+	baseBranch     string
 	registryRepo   string
 	registryStdin  bool
 	registryCreds  string
@@ -85,9 +85,11 @@ func newConfigInitCmd(app *cli.App) *cobra.Command {
 	f.StringVar(&opts.gitServer, "git-server", "", "Git server: github, gitea or gitlab")
 	f.BoolVar(&opts.gitPATStdin, "git-pat-stdin", false, "Read the Git PAT from stdin")
 	f.StringVar(&opts.gitPAT, "git-pat", "", "Git PAT (prefer --git-pat-stdin or LEPTOSTACK_GIT_PAT)")
-	f.BoolVar(&opts.resourcesPAT, "resources-pat-stdin", false, "Read the resources (template) PAT from stdin")
-	f.StringVar(&opts.templateURL, "template-url", "", "Cluster template URL")
-	f.StringVar(&opts.templateBranch, "template-branch", "", "Cluster template branch")
+	f.BoolVar(&opts.basePAT, "base-pat-stdin", false, "Read the leptostack-base PAT from stdin")
+	f.BoolVar(&opts.basePAT, "resources-pat-stdin", false, "Deprecated alias for --base-pat-stdin")
+	_ = f.MarkHidden("resources-pat-stdin")
+	f.StringVar(&opts.baseURL, "base-url", "", "leptostack-base repository URL")
+	f.StringVar(&opts.baseBranch, "base-branch", "", "leptostack-base repository branch")
 	f.StringVar(&opts.registryRepo, "registry-repository", "", "Container registry repository")
 	f.BoolVar(&opts.registryStdin, "registry-credentials-stdin", false, "Read registry credentials (user:pass) from stdin")
 	f.StringVar(&opts.registryCreds, "registry-credentials", "", "Registry credentials (user:pass)")
@@ -313,12 +315,12 @@ func runConfigInit(cmd *cobra.Command, app *cli.App, opts *initOptions) error {
 		git.PAT = envFirst(config.EnvGitPAT)
 	}
 
-	if opts.resourcesPAT {
+	if opts.basePAT {
 		pat, err := app.IO.ReadSecret()
 		if err != nil {
 			return err
 		}
-		ensureTemplate(cfg).PAT = strings.TrimSpace(pat)
+		ensureBase(cfg).PAT = strings.TrimSpace(pat)
 	}
 
 	if opts.registryCreds != "" {
@@ -334,12 +336,12 @@ func runConfigInit(cmd *cobra.Command, app *cli.App, opts *initOptions) error {
 		return cli.Exitf(cli.ExitUsage, "registry credentials must be in user:pass format")
 	}
 
-	tmpl := ensureTemplate(cfg)
-	if opts.templateURL != "" {
-		tmpl.URL = opts.templateURL
+	base := ensureBase(cfg)
+	if opts.baseURL != "" {
+		base.URL = opts.baseURL
 	}
-	if opts.templateBranch != "" {
-		tmpl.Branch = opts.templateBranch
+	if opts.baseBranch != "" {
+		base.Branch = opts.baseBranch
 	}
 	if opts.registryRepo != "" {
 		ensureRegistry(cfg).Repository = opts.registryRepo
@@ -501,7 +503,7 @@ func loadOrNew(app *cli.App) (*config.Config, error) {
 				Clusters:   map[string]*config.Cluster{},
 				Git:        &config.Git{},
 				Registry:   &config.Registry{},
-				Template:   &config.Template{},
+				Base:       &config.Base{},
 			}, nil
 		}
 		return nil, err
@@ -512,11 +514,11 @@ func loadOrNew(app *cli.App) (*config.Config, error) {
 	return cfg, nil
 }
 
-func ensureTemplate(cfg *config.Config) *config.Template {
-	if cfg.Template == nil {
-		cfg.Template = &config.Template{}
+func ensureBase(cfg *config.Config) *config.Base {
+	if cfg.Base == nil {
+		cfg.Base = &config.Base{}
 	}
-	return cfg.Template
+	return cfg.Base
 }
 
 func ensureRegistry(cfg *config.Config) *config.Registry {

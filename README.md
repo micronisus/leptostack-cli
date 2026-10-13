@@ -7,9 +7,8 @@ deployments, manages Flux sources and secrets, pauses/restores kustomizations,
 and configures local DNS and TLS trust.
 
 The CLI is a single static Go binary (one per platform) with a kubectl-inspired
-command grammar. The legacy `leptostack.sh` and `leptostack.ps1` scripts remain
-published during the deprecation window; see [Migrating from the shell
-CLI](#migrating-from-the-shell-cli).
+command grammar. See [Migrating from the shell CLI](#migrating-from-the-shell-cli)
+if you are coming from the older shell scripts.
 
 ## Installation
 
@@ -209,10 +208,10 @@ repository is created and the config is updated with the real values:
    account, **never replacing an existing one** (generated names are probed
    until unused);
 3. mints a **push/pull** token scoped to the new repository;
-4. mints a **read-only** token covering the cluster-template and leptostack-base
-   repositories;
+4. mints a **read-only** token covering the private **leptostack-base** repository
+   (the embedded cluster template's only external source);
 5. writes the owner, repository and tokens into the config (`git.pat`,
-   `template.pat`) and continues with the template sync and Flux bootstrap.
+   `base.pat`) and continues with the template sync and Flux bootstrap.
 
 To use an existing repository instead, pass its URL and skip the automation:
 
@@ -248,8 +247,8 @@ Adding a source is one validated command instead of hand-written YAML:
 leptostack create secret git helm-private --username me --password-stdin < token.txt
 leptostack create source helm my-charts --url https://charts.example.com --secret-ref helm-private
 
-# Second GitRepository for a fork of the cluster template
-leptostack create source git fork --url https://github.com/me/cluster-template-fork.git \
+# Second GitRepository for another Git source
+leptostack create source git internal --url https://github.com/me/internal-manifests.git \
   --branch dev --interval 1m --git
 
 # Inspect and clean up
@@ -322,9 +321,11 @@ registry:
   repository: ghcr.io
   # credentials: user:pass — from LEPTOSTACK_REGISTRY_CREDENTIALS when absent
 
-template:
-  url: https://github.com/leptostack-fluxcd/cluster-template.git
+base:
+  url: https://github.com/leptostack-fluxcd/leptostack-base.git
   branch: main
+  # pat: read-only token for the private leptostack-base repo; from
+  # LEPTOSTACK_BASE_PAT (or RESOURCES_GIT_PAT) when absent
 
 preferences:
   autoUpgradeCheck: true
@@ -333,7 +334,7 @@ preferences:
 - **Required keys and enums are validated.** Invalid config fails fast with exit
   code 3 and a message naming the exact key path.
 - **Secrets via env first.** `LEPTOSTACK_GIT_PAT`,
-  `LEPTOSTACK_REGISTRY_CREDENTIALS` and `LEPTOSTACK_TEMPLATE_PAT` (or
+  `LEPTOSTACK_REGISTRY_CREDENTIALS` and `LEPTOSTACK_BASE_PAT` (or
   `RESOURCES_GIT_PAT`) take precedence over the file, so CI never writes secrets
   to disk. `config view` redacts them unless `--show-secrets`.
 - **No code execution.** Unlike the shell config, the YAML cannot execute
@@ -388,8 +389,8 @@ are covered without a real cluster. See `cmd/cmd_test.go`.
 
 The repository layout follows the RFC: cobra commands in `cmd/`, and focused
 packages under `internal/` (`config`, `kubernetes`, `flux`, `providers`,
-`gitops`, `sources`, `secrets`, `kustomizations`, `ca`, `dns`, `portforward`,
-`registry`, `execx`, `upgrade`, `ui`, `version`).
+`gitops`, `clustertemplate`, `sources`, `secrets`, `kustomizations`, `ca`, `dns`,
+`portforward`, `registry`, `execx`, `upgrade`, `ui`, `version`).
 
 ## CI/CD
 
@@ -411,9 +412,8 @@ scripts/
   and runs `bash scripts/ci.sh`. Run it locally with `make ci`.
 - **Release** (`release.yml`, on `v*` tags): checks out with full history,
   installs GoReleaser from the Go module proxy, builds archives + `checksums.txt`
-  for linux/darwin/windows × amd64/arm64, stages `leptostack.sh` +
-  `leptostack.sh.sha256`, and publishes the release. Run it locally with
-  `RELEASE_VERSION=x.y.z make release`.
+  for linux/darwin/windows × amd64/arm64, and publishes the release. Run it
+  locally with `RELEASE_VERSION=x.y.z make release`.
 
 `scripts/release.sh` detects the forge and publishes accordingly:
 

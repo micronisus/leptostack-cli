@@ -87,10 +87,8 @@ func ImportLegacy(path string) (*Config, error) {
 			Repository:  kv["MODULE_REGISTRY_REPOSITORY"],
 			Credentials: kv["MODULE_REGISTRY_CREDENTIALS"],
 		},
-		Template: &Template{
-			URL:    kv["TEMPLATE_GIT_URL"],
-			Branch: kv["TEMPLATE_GIT_BRANCH"],
-			PAT:    firstNonEmpty(kv["RESOURCES_GIT_PAT"]),
+		Base: &Base{
+			PAT: kv["RESOURCES_GIT_PAT"],
 		},
 	}
 	cfg.ApplyDefaults()

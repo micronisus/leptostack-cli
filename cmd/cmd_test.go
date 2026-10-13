@@ -37,8 +37,8 @@ git:
 registry:
   repository: ghcr.io
   credentials: u:p
-template:
-  url: https://github.com/leptostack-fluxcd/cluster-template.git
+base:
+  url: https://github.com/leptostack-fluxcd/leptostack-base.git
   branch: main
 `
 
@@ -194,7 +194,7 @@ func TestSyncClusterDryRun(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit code = %d", code)
 	}
-	if !strings.Contains(errOut, "Would sync cluster template") {
+	if !strings.Contains(errOut, "Would sync the embedded cluster template") {
 		t.Fatalf("expected dry-run message, got %q", errOut)
 	}
 }

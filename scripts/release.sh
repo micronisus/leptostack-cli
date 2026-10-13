@@ -62,17 +62,10 @@ export GORELEASER_CURRENT_TAG="$TAG"
 goreleaser release --clean --skip=publish
 endgroup
 
-group "Shell artifacts"
-mkdir -p dist
-sed "s/^SCRIPT_VERSION=\"dev\"/SCRIPT_VERSION=\"$VERSION\"/" leptostack.sh > dist/leptostack.sh
-chmod +x dist/leptostack.sh
-( cd dist && sha256sum leptostack.sh > leptostack.sh.sha256 )
-endgroup
-
 # --- collect assets ----------------------------------------------------------
 
 ASSETS=()
-for f in dist/leptostack_*.tar.gz dist/checksums.txt dist/leptostack.sh dist/leptostack.sh.sha256; do
+for f in dist/leptostack_*.tar.gz dist/checksums.txt; do
   [ -e "$f" ] && ASSETS+=("$f")
 done
 [ "${#ASSETS[@]}" -gt 0 ] || die "no release artifacts were produced"

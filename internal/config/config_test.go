@@ -21,8 +21,6 @@ LEPTOSTACK_DOMAIN="alice-leptostack.test"
 MINIKUBE_CPUS="8"
 MINIKUBE_MEMORY="24576"
 RESOURCES_GIT_PAT="res_secret"
-TEMPLATE_GIT_URL="https://github.com/leptostack-fluxcd/cluster-template.git"
-TEMPLATE_GIT_BRANCH="main"
 MODULE_REGISTRY_REPOSITORY="ghcr.io"
 MODULE_REGISTRY_CREDENTIALS="user:pass"
 `
@@ -55,8 +53,8 @@ func TestImportLegacy(t *testing.T) {
 	if cfg.Git.PAT != "ghp_secret" || cfg.Git.Owner != "micronisus" {
 		t.Errorf("git: %+v", cfg.Git)
 	}
-	if cfg.Template.PAT != "res_secret" {
-		t.Errorf("template pat = %q", cfg.Template.PAT)
+	if cfg.Base.PAT != "res_secret" {
+		t.Errorf("base pat = %q", cfg.Base.PAT)
 	}
 	if cfg.Registry.Credentials != "user:pass" {
 		t.Errorf("registry creds = %q", cfg.Registry.Credentials)
@@ -73,7 +71,7 @@ func TestResolveEnvOverrides(t *testing.T) {
 		},
 		Git:      &Git{PAT: "from-file", Branch: "main", Owner: "o", Repository: "r", ClusterPath: "clusters/{cluster}"},
 		Registry: &Registry{Repository: "ghcr.io", Credentials: "file:creds"},
-		Template: &Template{URL: "u", Branch: "main"},
+		Base:     &Base{URL: "u", Branch: "main"},
 	}
 	t.Setenv(EnvGitPAT, "from-env")
 	t.Setenv(EnvRegistryCredentials, "env:creds")
@@ -115,11 +113,11 @@ func TestRedacted(t *testing.T) {
 	cfg := &Config{
 		Git:      &Git{PAT: "secret"},
 		Registry: &Registry{Credentials: "user:pass"},
-		Template: &Template{PAT: "tsecret"},
+		Base:     &Base{PAT: "tsecret"},
 		Clusters: map[string]*Cluster{"local": {Provider: ProviderMinikube}},
 	}
 	red := cfg.Redacted()
-	if red.Git.PAT != "<redacted>" || red.Registry.Credentials != "<redacted>" || red.Template.PAT != "<redacted>" {
+	if red.Git.PAT != "<redacted>" || red.Registry.Credentials != "<redacted>" || red.Base.PAT != "<redacted>" {
 		t.Fatalf("redaction failed: %+v", red)
 	}
 	if cfg.Git.PAT != "secret" {
@@ -154,8 +152,8 @@ git:
   server: github
   repository: auto
   branch: main
-template:
-  url: https://github.com/leptostack-fluxcd/cluster-template.git
+base:
+  url: https://github.com/leptostack-fluxcd/leptostack-base.git
   branch: main
 `
 	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
@@ -171,5 +169,47 @@ template:
 	}
 	if r.VCluster.HostNamespace != "alice" || r.Provider != ProviderVCluster {
 		t.Fatalf("unexpected resolved vcluster: %+v", r.VCluster)
+	}
+}
+
+func TestLoadFromMigratesTemplateToBase(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	doc := `apiVersion: v1
+kind: LeptostackConfig
+current-context: local
+clusters:
+  local:
+    provider: minikube
+    clusterName: local
+    domain: local.test
+git:
+  server: github
+  repository: auto
+  branch: main
+template:
+  url: https://github.com/leptostack-fluxcd/cluster-template.git
+  branch: develop
+  pat: old_secret
+`
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadFrom(path)
+	if err != nil {
+		t.Fatalf("config with a template block should still load: %v", err)
+	}
+	if cfg.Base == nil || cfg.Base.PAT != "old_secret" {
+		t.Fatalf("template.pat should migrate to base.pat: %+v", cfg.Base)
+	}
+	r, err := cfg.Resolve("local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Base.URL != DefaultBaseURL || r.Base.Branch != DefaultBaseBranch {
+		t.Fatalf("template url/branch must be dropped for the base defaults: %+v", r.Base)
+	}
+	if r.Base.PAT != "old_secret" {
+		t.Fatalf("resolved base pat = %q", r.Base.PAT)
 	}
 }

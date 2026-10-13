@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/micronisus/leptostack-cli/internal/cli"
+	"github.com/micronisus/leptostack-cli/internal/clustertemplate"
 	"github.com/micronisus/leptostack-cli/internal/config"
 	"github.com/micronisus/leptostack-cli/internal/execx"
 	"github.com/micronisus/leptostack-cli/internal/testutil"
@@ -40,6 +41,109 @@ func testManager(r *config.Resolved, runner *execx.Runner) *Manager {
 		R:        runner,
 		IO:       cli.NewIOStreams(strings.NewReader(""), io.Discard, io.Discard),
 		Resolved: r,
+	}
+}
+
+func TestRewriteBaseSource(t *testing.T) {
+	const content = `apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: leptostack-base
+  namespace: flux-system
+spec:
+  interval: 1m0s
+  ref:
+    branch: main
+  secretRef:
+    name: leptostack-base
+  url: https://github.com/leptostack-fluxcd/leptostack-base.git
+`
+	write := func(t *testing.T, body string) string {
+		t.Helper()
+		p := filepath.Join(t.TempDir(), "leptostack-source.yaml")
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	// Defaults must not change the file.
+	p := write(t, content)
+	if err := rewriteBaseSource(p, config.DefaultBaseURL, config.DefaultBaseBranch); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(p)
+	if string(b) != content {
+		t.Fatalf("default rewrite changed the file:\n%s", b)
+	}
+
+	// Overrides replace url and branch but nothing else.
+	p = write(t, content)
+	if err := rewriteBaseSource(p, "https://git.example.com/team/base.git", "release"); err != nil {
+		t.Fatal(err)
+	}
+	b, _ = os.ReadFile(p)
+	s := string(b)
+	if !strings.Contains(s, "url: https://git.example.com/team/base.git") || !strings.Contains(s, "branch: release") {
+		t.Fatalf("base overrides not applied:\n%s", s)
+	}
+	if strings.Contains(s, "secretRef") == false || !strings.Contains(s, "interval: 1m0s") {
+		t.Fatalf("rewrite dropped unrelated fields:\n%s", s)
+	}
+}
+
+func TestEmbeddedTemplateProducesClusterRepo(t *testing.T) {
+	dir := t.TempDir()
+	templateDir := filepath.Join(dir, "template")
+	repoDir := filepath.Join(dir, "repo")
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := clustertemplate.Extract(templateDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := replaceContents(templateDir, repoDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := rewriteBaseSource(filepath.Join(repoDir, "infrastructure", "leptostack-source.yaml"), "https://git.example.com/team/base.git", "release"); err != nil {
+		t.Fatal(err)
+	}
+
+	clusterDir := filepath.Join(repoDir, "clusters", "devops")
+	if err := os.Rename(filepath.Join(repoDir, "clusters", "example"), clusterDir); err != nil {
+		t.Fatal(err)
+	}
+	clusterKust := filepath.Join(clusterDir, "kustomization.yaml")
+	if err := renameExampleReferences(clusterKust, "devops"); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := addInternalCADeletePatch(clusterKust)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("the embedded template's cluster kustomization must accept the internal-ca delete patch")
+	}
+
+	r := &config.Resolved{Provider: config.ProviderVCluster, ClusterName: "devops", Domain: "dev.example", LeptostackName: "portal"}
+	if err := testManager(r, nil).generateClusterConfig(context.Background(), repoDir); err != nil {
+		t.Fatal(err)
+	}
+
+	overlay, err := os.ReadFile(filepath.Join(repoDir, "apps", "leptostack", "overlays", "devops", "kustomization.yaml"))
+	if err != nil {
+		t.Fatalf("cluster overlay not created from the embedded template: %v", err)
+	}
+	if !strings.Contains(string(overlay), "namePrefix: devops-") {
+		t.Fatalf("overlay namePrefix not rewritten:\n%s", overlay)
+	}
+	ck, _ := os.ReadFile(clusterKust)
+	if !strings.Contains(string(ck), "overlays/devops") || strings.Contains(string(ck), "example") {
+		t.Fatalf("cluster kustomization references not rewritten:\n%s", ck)
+	}
+	src, _ := os.ReadFile(filepath.Join(repoDir, "infrastructure", "leptostack-source.yaml"))
+	if !strings.Contains(string(src), "url: https://git.example.com/team/base.git") || !strings.Contains(string(src), "branch: release") {
+		t.Fatalf("base source not rewritten from base.*:\n%s", src)
 	}
 }
 

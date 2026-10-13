@@ -81,7 +81,7 @@ func (g *github) CreateReadToken(ctx context.Context, owner string, repos []Repo
 		return Credential{}, err
 	}
 	cred.Name = name
-	cred.Note += " (GitHub does not support read-only PATs, so the same token is used for the template/base repositories)"
+	cred.Note += " (GitHub does not support read-only PATs, so the same token is used for the base repository)"
 	return cred, nil
 }
 

@@ -1,0 +1,13 @@
+nameReference:
+  - kind: ConfigMap
+    fieldSpecs:
+      - kind: Kustomization
+        path: spec/postBuild/substituteFrom/name
+  - kind: Kustomization
+    fieldSpecs:
+      - kind: Kustomization
+        path: spec/dependsOn/name
+  - kind: ImageRepository
+    fieldSpecs:
+      - kind: ImagePolicy
+        path: spec/imageRepositoryRef/name

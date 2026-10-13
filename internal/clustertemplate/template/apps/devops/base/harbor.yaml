@@ -1,0 +1,43 @@
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: harbor-pre
+  namespace: flux-system
+spec:
+  interval: 720m0s
+  timeout: 10m
+  dependsOn:
+    - name: keycloak-post
+    - name: pgcluster
+  sourceRef:
+    kind: GitRepository
+    name: leptostack-base
+  path: ./leptostack/harbor/pre
+  prune: true
+  wait: true
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: leptostack-config
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: harbor
+  namespace: flux-system
+spec:
+  interval: 720m0s
+  timeout: 10m
+  dependsOn:
+    - name: harbor-pre
+  sourceRef:
+    kind: GitRepository
+    name: leptostack-base
+  path: ./leptostack/harbor
+  prune: true
+  wait: true
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: leptostack-config

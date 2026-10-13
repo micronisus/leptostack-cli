@@ -30,7 +30,7 @@ type Config struct {
 	Clusters       map[string]*Cluster `json:"clusters,omitempty"`
 	Git            *Git                `json:"git,omitempty"`
 	Registry       *Registry           `json:"registry,omitempty"`
-	Template       *Template           `json:"template,omitempty"`
+	Base           *Base               `json:"base,omitempty"`
 	Preferences    *Preferences        `json:"preferences,omitempty"`
 }
 
@@ -44,7 +44,7 @@ type Cluster struct {
 	VCluster       *VCluster `json:"vcluster,omitempty"`
 	Git            *Git      `json:"git,omitempty"`
 	Registry       *Registry `json:"registry,omitempty"`
-	Template       *Template `json:"template,omitempty"`
+	Base           *Base     `json:"base,omitempty"`
 }
 
 // Minikube holds minikube-specific settings.
@@ -77,8 +77,9 @@ type Registry struct {
 	Credentials string `json:"credentials,omitempty"`
 }
 
-// Template identifies the cluster template repository.
-type Template struct {
+// Base identifies the private leptostack-base repository: the GitRepository
+// source the embedded cluster template reconciles its infrastructure from.
+type Base struct {
 	URL    string `json:"url,omitempty"`
 	Branch string `json:"branch,omitempty"`
 	PAT    string `json:"pat,omitempty"`
@@ -102,7 +103,7 @@ type Resolved struct {
 	VCluster        VCluster
 	Git             Git
 	Registry        Registry
-	Template        Template
+	Base            Base
 	MinikubeProfile string
 	KubeContext     string
 	HostNamespace   string
@@ -131,9 +132,9 @@ func (c *Config) Clone() *Config {
 		r := *c.Registry
 		out.Registry = &r
 	}
-	if c.Template != nil {
-		t := *c.Template
-		out.Template = &t
+	if c.Base != nil {
+		b := *c.Base
+		out.Base = &b
 	}
 	if c.Preferences != nil {
 		p := *c.Preferences
@@ -166,9 +167,9 @@ func (cl *Cluster) clone() *Cluster {
 		r := *cl.Registry
 		out.Registry = &r
 	}
-	if cl.Template != nil {
-		t := *cl.Template
-		out.Template = &t
+	if cl.Base != nil {
+		b := *cl.Base
+		out.Base = &b
 	}
 	return &out
 }

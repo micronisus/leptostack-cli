@@ -1,0 +1,86 @@
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: pgcluster-pre
+  namespace: flux-system
+spec:
+  interval: 720m0s
+  timeout: 10m
+  dependsOn:
+    - name: openbao-init
+  sourceRef:
+    kind: GitRepository
+    name: leptostack-base
+  path: ./leptostack/pgcluster/pre
+  prune: true
+  wait: true
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: leptostack-config
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: pgcluster
+  namespace: flux-system
+spec:
+  interval: 720m0s
+  timeout: 10m
+  dependsOn:
+    - name: openbao-post
+    - name: pgcluster-pre
+  sourceRef:
+    kind: GitRepository
+    name: leptostack-base
+  path: ./leptostack/pgcluster
+  prune: true
+  wait: true
+  patches:
+    - target:
+        group: postgresql.cnpg.io
+        kind: Cluster
+      patch: |-
+        apiVersion: postgresql.cnpg.io/v1
+        kind: Cluster
+        metadata:
+          name: not-used
+        spec:
+          storage:
+            size: 10Gi
+          imageCatalogRef:
+            name: supabase
+          postgresUID: 100
+          postgresGID: 101
+          postgresql:
+            parameters:
+              cron.database_name: supabase
+            shared_preload_libraries:
+              - pg_stat_statements
+              - pgaudit
+              - plpgsql
+              - plpgsql_check
+              - pg_cron
+              - pg_net
+              - auto_explain
+              - pg_tle
+              - plan_filter
+          bootstrap:
+            initdb:
+              database: supabase
+              owner: supabase_admin
+              postInitSQL:
+                - ALTER ROLE "supabase_admin" WITH SUPERUSER CREATEROLE BYPASSRLS CREATEDB
+              postInitApplicationSQLRefs:
+                configMapRefs:
+                  - name: supabase-dbinit
+                    key: 00-init-scripts.sql
+                  - name: supabase-dbinit
+                    key: 01-migrations.sql
+                  - name: supabase-dbinit
+                    key: 03-extensions.sql
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: leptostack-config

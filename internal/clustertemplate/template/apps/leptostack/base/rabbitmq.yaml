@@ -1,0 +1,51 @@
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: rabbitmq-pre
+  namespace: flux-system
+spec:
+  interval: 720m0s
+  retryInterval: 1m
+  timeout: 10m
+  dependsOn:
+    - name: keycloak-post
+  sourceRef:
+    kind: GitRepository
+    name: leptostack-base
+  path: ./leptostack/rabbitmq/pre
+  prune: true
+  wait: true
+  healthChecks:
+    - apiVersion: v1
+      kind: Secret
+      name: rabbitmq-kc-client
+      namespace: flux-system
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: leptostack-config
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: rabbitmq
+  namespace: flux-system
+spec:
+  interval: 720m0s
+  retryInterval: 1m
+  timeout: 10m
+  dependsOn:
+    - name: rabbitmq-pre
+  sourceRef:
+    kind: GitRepository
+    name: leptostack-base
+  path: ./leptostack/rabbitmq
+  prune: true
+  wait: false
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: leptostack-config
+      - kind: Secret
+        name: rabbitmq-kc-client

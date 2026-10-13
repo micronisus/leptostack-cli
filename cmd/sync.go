@@ -21,11 +21,11 @@ func newSyncCmd(app *cli.App) *cobra.Command {
 }
 
 func newSyncClusterCmd(app *cli.App) *cobra.Command {
-	var branch, url string
+	var branch string
 	var force bool
 	c := &cobra.Command{
 		Use:   "cluster",
-		Short: "Re-populate the GitOps repository from the cluster template",
+		Short: "Re-populate the GitOps repository from the embedded cluster template",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r, err := resolve(app)
@@ -34,9 +34,6 @@ func newSyncClusterCmd(app *cli.App) *cobra.Command {
 			}
 			if branch != "" {
 				r.Git.Branch = branch
-			}
-			if url != "" {
-				r.Template.URL = url
 			}
 			if force && !app.Flags.DryRun {
 				ok, err := app.Confirm(fmt.Sprintf("Force sync overwrites the contents of %s/%s and pushes to %s. Continue?", r.Git.Owner, r.Git.Repository, r.Git.Branch))
@@ -53,7 +50,7 @@ func newSyncClusterCmd(app *cli.App) *cobra.Command {
 				if force {
 					mode = "force-overwrite the repository contents"
 				}
-				app.IO.Errf("Would sync cluster template into %s/%s (branch %s): %s.\n", r.Git.Owner, r.Git.Repository, r.Git.Branch, mode)
+				app.IO.Errf("Would sync the embedded cluster template into %s/%s (branch %s): %s.\n", r.Git.Owner, r.Git.Repository, r.Git.Branch, mode)
 				return nil
 			}
 			ctx, cancel := app.Context(clusterWaitTimeout)
@@ -66,7 +63,6 @@ func newSyncClusterCmd(app *cli.App) *cobra.Command {
 		},
 	}
 	c.Flags().StringVar(&branch, "branch", "", "Override the GitOps branch")
-	c.Flags().StringVar(&url, "url", "", "Override the cluster template URL")
 	c.Flags().BoolVar(&force, "force", false, "Force the template sync even if the cluster path exists")
 	return c
 }
@@ -74,7 +70,7 @@ func newSyncClusterCmd(app *cli.App) *cobra.Command {
 func newSyncFluxCmd(app *cli.App) *cobra.Command {
 	return &cobra.Command{
 		Use:   "flux",
-		Short: "Refresh the FluxCD base manifests from the cluster template",
+		Short: "Refresh the FluxCD base manifests from the embedded cluster template",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r, err := resolve(app)

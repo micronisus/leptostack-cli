@@ -1,0 +1,44 @@
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: zammad-pre
+  namespace: flux-system
+spec:
+  interval: 720m0s
+  timeout: 10m
+  dependsOn:
+    - name: keycloak-post
+    - name: pgcluster
+    - name: seaweedfs
+  sourceRef:
+    kind: GitRepository
+    name: leptostack-base
+  path: ./leptostack/zammad/pre
+  prune: true
+  wait: true
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: leptostack-config
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: zammad
+  namespace: flux-system
+spec:
+  interval: 720m0s
+  timeout: 10m
+  dependsOn:
+    - name: zammad-pre
+  sourceRef:
+    kind: GitRepository
+    name: leptostack-base
+  path: ./leptostack/zammad
+  prune: true
+  wait: true
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: leptostack-config

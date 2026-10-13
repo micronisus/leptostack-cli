@@ -1,0 +1,34 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: module-core
+spec:
+  patches:
+    - target:
+        group: helm.toolkit.fluxcd.io
+        version: v2
+        kind: HelmRelease
+      patch: |-
+        - op: add
+          path: /spec/postRenderers
+          value:
+            - kustomize:
+                images:
+                  - name: ${module_name}-backend
+                    newName: ghcr.io/leptostack/core-backend
+                    newTag: ${core_backend_tag}
+                  - name: ${module_name}-bff
+                    newName: ghcr.io/leptostack/core-bff
+                    newTag: ${core_bff_tag}
+                  - name: ${module_name}-cms
+                    newName: ghcr.io/leptostack/core-cms
+                    newTag: ${core_cms_tag}
+                  - name: ${module_name}-frontend
+                    newName: ghcr.io/leptostack/core-frontend
+                    newTag: ${core_frontend_tag}
+  postBuild:
+    substitute:
+      core_backend_tag: 35279f9-34 # {"$imagepolicy": "flux-system:example-core-backend-policy:tag"}
+      core_bff_tag: 35279f9-34 # {"$imagepolicy": "flux-system:example-core-bff-policy:tag"}
+      core_cms_tag: 35279f9-34 # {"$imagepolicy": "flux-system:example-core-cms-policy:tag"}
+      core_frontend_tag: 35279f9-34 # {"$imagepolicy": "flux-system:example-core-frontend-policy:tag"}

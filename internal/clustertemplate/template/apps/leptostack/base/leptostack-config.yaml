@@ -1,0 +1,21 @@
+# LeptoStack custom configuration -- DO NOT CHANGE THIS FILE! Add your cluster level settings as overlay patches
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: leptostack-config
+  namespace: flux-system
+data:
+  cluster_name: local
+  leptostack_domain: minikube.test
+  leptostack_name: portal
+  leptostack_acme_email: ""
+  # The following are service hostnames that can be added in the overlay patches
+  # sso_hostname: portal-sso
+  # che_hostname: portal-che
+  # dashboard_hostname: portal-dashboard
+  # db_hostname: portal-db
+  # design_hostname: portal-design
+  # git_hostname: portal-git
+  # llm_hostname: portal-llm
+  # registry_hostname: portal-registry

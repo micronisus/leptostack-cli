@@ -51,12 +51,12 @@ func setConfigValue(cfg *config.Config, key, value string, secret bool) error {
 			return cli.Exitf(cli.ExitUsage, "registry credentials must be in user:pass format")
 		}
 		ensureRegistry(cfg).Credentials = value
-	case "template.url":
-		ensureTemplate(cfg).URL = value
-	case "template.branch":
-		ensureTemplate(cfg).Branch = value
-	case "template.pat":
-		ensureTemplate(cfg).PAT = value
+	case "base.url":
+		ensureBase(cfg).URL = value
+	case "base.branch":
+		ensureBase(cfg).Branch = value
+	case "base.pat":
+		ensureBase(cfg).PAT = value
 	case "preferences.autoUpgradeCheck":
 		b := value == "true"
 		if cfg.Preferences == nil {
@@ -129,9 +129,9 @@ func unsetConfigValue(cfg *config.Config, key string) error {
 		if cfg.Registry != nil {
 			cfg.Registry.Credentials = ""
 		}
-	case "template.pat":
-		if cfg.Template != nil {
-			cfg.Template.PAT = ""
+	case "base.pat":
+		if cfg.Base != nil {
+			cfg.Base.PAT = ""
 		}
 	default:
 		return cli.Exitf(cli.ExitUsage, "unknown or non-unsettable configuration key %q", key)

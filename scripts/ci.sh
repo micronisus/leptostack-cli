@@ -45,7 +45,7 @@ endgroup
 
 group "shellcheck"
 if command -v shellcheck >/dev/null 2>&1; then
-  shellcheck -S warning leptostack.sh install.sh scripts/*.sh
+  shellcheck -S warning install.sh scripts/*.sh
 else
   echo "shellcheck not installed; skipping"
 fi

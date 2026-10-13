@@ -148,10 +148,10 @@ func (m *Manager) generateClusterConfig(ctx context.Context, repoDir string) err
 	overlayDir := filepath.Join(repoDir, "apps", "leptostack", "overlays", clusterName)
 	exampleOverlay := filepath.Join(repoDir, "apps", "leptostack", "overlays", "example")
 	if !fileExists(filepath.Join(exampleOverlay, "kustomization.yaml")) {
-		return fmt.Errorf("could not find apps/leptostack/overlays/example/kustomization.yaml in the cluster template")
+		return fmt.Errorf("could not find apps/leptostack/overlays/example/kustomization.yaml in the embedded template")
 	}
 
-	m.IO.Errf("Creating cluster overlay at apps/leptostack/overlays/%s from the template example overlay...\n", clusterName)
+	m.IO.Errf("Creating cluster overlay at apps/leptostack/overlays/%s from the embedded template's example overlay...\n", clusterName)
 	if err := os.MkdirAll(overlayDir, 0o755); err != nil {
 		return err
 	}

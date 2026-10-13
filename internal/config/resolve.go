@@ -69,22 +69,22 @@ func (c *Config) Resolve(name string) (*Resolved, error) {
 		r.Registry.Credentials = v
 	}
 
-	// Template.
-	r.Template = mergeTemplate(c.Template, cl.Template)
-	if v := os.Getenv(EnvTemplateURL); v != "" {
-		r.Template.URL = v
+	// Base.
+	r.Base = mergeBase(c.Base, cl.Base)
+	if v := os.Getenv(EnvBaseURL); v != "" {
+		r.Base.URL = v
 	}
-	if v := os.Getenv(EnvTemplateBranch); v != "" {
-		r.Template.Branch = v
+	if v := os.Getenv(EnvBaseBranch); v != "" {
+		r.Base.Branch = v
 	}
-	if r.Template.PAT == "" {
-		r.Template.PAT = firstNonEmpty(os.Getenv(EnvTemplatePAT), os.Getenv(EnvResourcesPAT))
+	if r.Base.PAT == "" {
+		r.Base.PAT = firstNonEmpty(os.Getenv(EnvBasePAT), os.Getenv(EnvResourcesPAT))
 	}
-	if r.Template.URL == "" {
-		r.Template.URL = DefaultTemplateURL
+	if r.Base.URL == "" {
+		r.Base.URL = DefaultBaseURL
 	}
-	if r.Template.Branch == "" {
-		r.Template.Branch = DefaultTemplateBranch
+	if r.Base.Branch == "" {
+		r.Base.Branch = DefaultBaseBranch
 	}
 
 	// Derived names.
@@ -183,8 +183,8 @@ func mergeRegistry(global, override *Registry) Registry {
 	return out
 }
 
-func mergeTemplate(global, override *Template) Template {
-	var out Template
+func mergeBase(global, override *Base) Base {
+	var out Base
 	if global != nil {
 		out = *global
 	}

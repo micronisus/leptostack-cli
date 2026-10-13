@@ -88,7 +88,7 @@ func (f *forgejo) CreateReadToken(ctx context.Context, owner string, repos []Rep
 		return Credential{}, fmt.Errorf("no repositories supplied for the read token")
 	}
 	// A user-scoped read:repository token covers every repository the user can
-	// read, so mint it for the authenticated account, not the template owner.
+	// read, so mint it for the authenticated account, not the base owner.
 	tok, err := f.mintToken(ctx, owner, name, []string{"read:repository"})
 	if err != nil {
 		return Credential{}, err

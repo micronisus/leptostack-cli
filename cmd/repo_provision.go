@@ -56,14 +56,14 @@ func provisionAutoRepository(ctx context.Context, app *cli.App, r *config.Resolv
 		return err
 	}
 
-	templateRepo, baseRepo, err := autoReadTokenRepos(r)
+	baseRepo, err := autoReadTokenRepo(r)
 	if err != nil {
 		return err
 	}
 
 	if app.Flags.DryRun {
-		app.IO.Errf("Would create %s repository %s/%s (private) and mint Flux tokens for %s and %s.\n",
-			server, owner, repoName, templateRepo.FullName(), baseRepo.FullName())
+		app.IO.Errf("Would create %s repository %s/%s (private) and mint a Flux token and a read-only token for %s.\n",
+			server, owner, repoName, baseRepo.FullName())
 		return nil
 	}
 
@@ -78,7 +78,7 @@ func provisionAutoRepository(ctx context.Context, app *cli.App, r *config.Resolv
 	if err != nil {
 		return err
 	}
-	readCred, err := client.CreateReadToken(ctx, owner, []forge.Repo{templateRepo, baseRepo}, fmt.Sprintf("leptostack-%s-read-%d", r.ClusterName, stamp))
+	readCred, err := client.CreateReadToken(ctx, owner, []forge.Repo{baseRepo}, fmt.Sprintf("leptostack-%s-read-%d", r.ClusterName, stamp))
 	if err != nil {
 		return err
 	}
@@ -93,7 +93,7 @@ func provisionAutoRepository(ctx context.Context, app *cli.App, r *config.Resolv
 	r.Git.Owner = owner
 	r.Git.Repository = repoName
 	r.Git.PAT = repoCred.Token
-	r.Template.PAT = readCred.Token
+	r.Base.PAT = readCred.Token
 	r.AutoRepo = false
 
 	app.IO.Errf("Created repository %s and updated %s\n", repo.FullName(), config.DefaultPath())
@@ -106,13 +106,12 @@ func provisionAutoRepository(ctx context.Context, app *cli.App, r *config.Resolv
 	return nil
 }
 
-func autoReadTokenRepos(r *config.Resolved) (forge.Repo, forge.Repo, error) {
-	templateRepo, err := forge.RepoFromURL(r.Template.URL)
+func autoReadTokenRepo(r *config.Resolved) (forge.Repo, error) {
+	repo, err := forge.RepoFromURL(r.Base.URL)
 	if err != nil {
-		return forge.Repo{}, forge.Repo{}, cli.Exitf(cli.ExitConfig, "could not derive the cluster-template repository from %q", r.Template.URL)
+		return forge.Repo{}, cli.Exitf(cli.ExitConfig, "could not derive the leptostack-base repository from %q", r.Base.URL)
 	}
-	baseRepo := forge.Repo{Owner: templateRepo.Owner, Name: "leptostack-base"}
-	return templateRepo, baseRepo, nil
+	return repo, nil
 }
 
 // persistRepository records the materialized repository and tokens in the
@@ -136,10 +135,10 @@ func persistRepository(app *cli.App, r *config.Resolved, server forge.Server, ho
 		ClusterPath: orString(r.Git.ClusterPath, "clusters/"+r.ClusterName),
 		PAT:         pushToken,
 	}
-	if cl.Template == nil {
-		cl.Template = &config.Template{}
+	if cl.Base == nil {
+		cl.Base = &config.Base{}
 	}
-	cl.Template.PAT = readToken
+	cl.Base.PAT = readToken
 	if cfg.CurrentContext == "" {
 		cfg.CurrentContext = r.Name
 	}

@@ -1,5 +1,5 @@
 // Package gitops ports the three git-heavy workflows from the bash
-// implementation: cluster-template sync, Flux bootstrap, and FluxCD base
+// implementation: embedded-template sync, Flux bootstrap, and FluxCD base
 // manifest refresh. It keeps the GitOps repository as the source of truth.
 package gitops
 
@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/micronisus/leptostack-cli/internal/cli"
+	"github.com/micronisus/leptostack-cli/internal/clustertemplate"
 	"github.com/micronisus/leptostack-cli/internal/config"
 	"github.com/micronisus/leptostack-cli/internal/execx"
 	"github.com/micronisus/leptostack-cli/internal/flux"
@@ -58,21 +59,6 @@ func (m *Manager) gitHost() string {
 func (m *Manager) repoURL() string {
 	g := m.Resolved.Git
 	return fmt.Sprintf("https://%s/%s/%s.git", m.gitHost(), g.Owner, g.Repository)
-}
-
-// templateURL builds the (credential-free) clone URL for the template repo.
-func (m *Manager) templateURL() string {
-	raw := m.Resolved.Template.URL
-	raw = strings.TrimPrefix(raw, "https://")
-	raw = strings.TrimPrefix(raw, "http://")
-	return "https://" + raw
-}
-
-func (m *Manager) templatePAT() string {
-	if m.Resolved.Template.PAT != "" {
-		return m.Resolved.Template.PAT
-	}
-	return m.Resolved.Git.PAT
 }
 
 // gitAuthEnv returns git environment variables that carry an HTTP Basic
@@ -133,7 +119,7 @@ func (m *Manager) commitAndPush(ctx context.Context, dir, message, noChangesMess
 	return nil
 }
 
-// SyncClusterTemplate populates the GitOps repository from the cluster
+// SyncClusterTemplate populates the GitOps repository from the embedded cluster
 // template. force re-runs even when the cluster path already exists.
 func (m *Manager) SyncClusterTemplate(ctx context.Context, force bool) error {
 	g := m.Resolved.Git
@@ -168,24 +154,26 @@ func (m *Manager) SyncClusterTemplate(ctx context.Context, force bool) error {
 		}
 	}
 
-	m.IO.Errf("Cloning cluster template %s...\n", m.Resolved.Template.URL)
+	m.IO.Errln("Extracting the embedded cluster template...")
 	templateDir := filepath.Join(tmp, "template")
-	if err := m.gitAs(ctx, m.templatePAT(), "", "clone", "--branch", m.Resolved.Template.Branch, "--depth", "1", m.templateURL(), templateDir); err != nil {
+	if err := clustertemplate.Extract(templateDir); err != nil {
 		return err
 	}
-	_ = m.git(ctx, templateDir, "remote", "remove", "origin")
 
-	m.IO.Errln("Replacing repository contents with the cluster template...")
+	m.IO.Errln("Replacing repository contents with the embedded cluster template...")
 	if err := replaceContents(templateDir, repoDir); err != nil {
+		return err
+	}
+	if err := rewriteBaseSource(filepath.Join(repoDir, "infrastructure", "leptostack-source.yaml"), m.Resolved.Base.URL, m.Resolved.Base.Branch); err != nil {
 		return err
 	}
 
 	exampleDir := filepath.Join(repoDir, "clusters", "example")
 	if !dirExists(exampleDir) {
-		return fmt.Errorf("clusters/example not found in the cluster template")
+		return fmt.Errorf("clusters/example not found in the embedded cluster template")
 	}
 	if m.Resolved.ClonePath() == "clusters/example" {
-		return fmt.Errorf("clusterPath cannot be clusters/example (reserved by the cluster template)")
+		return fmt.Errorf("clusterPath cannot be clusters/example (reserved by the embedded cluster template)")
 	}
 	clusterDir := filepath.Join(repoDir, filepath.FromSlash(m.Resolved.ClonePath()))
 	if err := os.RemoveAll(clusterDir); err != nil {
@@ -198,7 +186,7 @@ func (m *Manager) SyncClusterTemplate(ctx context.Context, force bool) error {
 
 	clusterKust := filepath.Join(clusterDir, "kustomization.yaml")
 	if !fileExists(clusterKust) {
-		return fmt.Errorf("could not find %s/kustomization.yaml in the cluster template", m.Resolved.ClonePath())
+		return fmt.Errorf("could not find %s/kustomization.yaml in the embedded cluster template", m.Resolved.ClonePath())
 	}
 	if err := renameExampleReferences(clusterKust, m.Resolved.ClusterName); err != nil {
 		return err
@@ -216,15 +204,37 @@ func (m *Manager) SyncClusterTemplate(ctx context.Context, force bool) error {
 	}
 
 	m.IO.Errf("Cluster overlay files created at apps/leptostack/overlays/%s\n", m.Resolved.ClusterName)
+	message := "Sync GitOps repository from the embedded cluster template"
+	noChanges := "Repository is already in sync with the embedded cluster template; no changes to push."
 	if repoExists {
-		return m.commitAndPush(ctx, repoDir, "Sync cluster template from "+m.Resolved.Template.URL,
-			"Repository is already in sync with the cluster template; no changes to push.")
+		return m.commitAndPush(ctx, repoDir, message, noChanges)
 	}
-	return m.commitAndPush(ctx, repoDir, "Sync cluster template from "+m.Resolved.Template.URL,
-		"Repository is already in sync with the cluster template; no changes to push.", "-u", "HEAD:"+g.Branch)
+	return m.commitAndPush(ctx, repoDir, message, noChanges, "-u", "HEAD:"+g.Branch)
 }
 
-// RunBootstrap syncs the cluster template and runs flux bootstrap.
+// rewriteBaseSource points the embedded leptostack-base GitRepository at the
+// configured base URL and branch.
+func rewriteBaseSource(path, url, branch string) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(string(b), "\n")
+	inRef := false
+	for i, line := range lines {
+		switch {
+		case strings.HasPrefix(line, "  ref:"):
+			inRef = true
+		case strings.HasPrefix(line, "  url:"):
+			lines[i] = "  url: " + url
+		case inRef && strings.HasPrefix(line, "    branch:"):
+			lines[i] = "    branch: " + branch
+		}
+	}
+	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
+}
+
+// RunBootstrap syncs the embedded cluster template and runs flux bootstrap.
 func (m *Manager) RunBootstrap(ctx context.Context, resync bool) error {
 	if err := m.SyncClusterTemplate(ctx, resync); err != nil {
 		return err
@@ -282,7 +292,8 @@ func (m *Manager) RemoveFile(ctx context.Context, relPath, message string) error
 	return m.commitAndPush(ctx, repoDir, message, "No changes to push.")
 }
 
-// UpdateFlux refreshes the FluxCD base manifests from the cluster template.
+// UpdateFlux refreshes the FluxCD base manifests from the embedded cluster
+// template.
 func (m *Manager) UpdateFlux(ctx context.Context) error {
 	g := m.Resolved.Git
 	tmp, err := os.MkdirTemp("", "leptostack-update-flux-")
@@ -297,19 +308,18 @@ func (m *Manager) UpdateFlux(ctx context.Context) error {
 		return fmt.Errorf("could not clone %s/%s at branch %q: %w", g.Owner, g.Repository, g.Branch, err)
 	}
 
-	m.IO.Errf("Cloning cluster template %s (%s)...\n", m.Resolved.Template.URL, m.Resolved.Template.Branch)
+	m.IO.Errln("Extracting the embedded cluster template...")
 	templateDir := filepath.Join(tmp, "template")
-	if err := m.gitAs(ctx, m.templatePAT(), "", "clone", "--branch", m.Resolved.Template.Branch, "--depth", "1", m.templateURL(), templateDir); err != nil {
+	if err := clustertemplate.Extract(templateDir); err != nil {
 		return err
 	}
-	_ = m.git(ctx, templateDir, "remote", "remove", "origin")
 
 	changed := false
 	for _, p := range FluxTemplatePaths {
 		src := filepath.Join(templateDir, filepath.FromSlash(p))
 		dst := filepath.Join(fluxDir, filepath.FromSlash(p))
 		if !pathExists(src) {
-			m.IO.Errf("  %s: not found in the cluster template; skipping.\n", p)
+			m.IO.Errf("  %s: not found in the embedded cluster template; skipping.\n", p)
 			continue
 		}
 		same, _ := dirsEqual(src, dst)
@@ -331,9 +341,9 @@ func (m *Manager) UpdateFlux(ctx context.Context) error {
 	}
 
 	if !changed {
-		m.IO.Errln("FluxCD repository is already up to date with the cluster template.")
+		m.IO.Errln("FluxCD repository is already up to date with the embedded cluster template.")
 		return nil
 	}
-	return m.commitAndPush(ctx, fluxDir, "Update FluxCD manifests from cluster template",
-		"FluxCD repository is already up to date with the cluster template.")
+	return m.commitAndPush(ctx, fluxDir, "Update FluxCD manifests from the embedded cluster template",
+		"FluxCD repository is already up to date with the embedded cluster template.")
 }

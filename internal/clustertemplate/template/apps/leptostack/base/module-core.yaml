@@ -1,0 +1,153 @@
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageRepository
+metadata:
+  name: core-backend
+  namespace: flux-system
+spec:
+  secretRef:
+    name: registry-creds
+  image: ghcr.io/leptostack/core-backend
+  interval: 5m
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImagePolicy
+metadata:
+  name: core-backend-policy
+  namespace: flux-system
+spec:
+  imageRepositoryRef:
+    name: core-backend
+  filterTags:
+    pattern: '[a-f0-9]+-(?P<ts>[0-9]+)'
+    extract: '$ts'
+  policy:
+    numerical:
+      order: asc
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageRepository
+metadata:
+  name: core-bff
+  namespace: flux-system
+spec:
+  secretRef:
+    name: registry-creds
+  image: ghcr.io/leptostack/core-bff
+  interval: 5m
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImagePolicy
+metadata:
+  name: core-bff-policy
+  namespace: flux-system
+spec:
+  imageRepositoryRef:
+    name: core-bff
+  filterTags:
+    pattern: '[a-f0-9]+-(?P<ts>[0-9]+)'
+    extract: '$ts'
+  policy:
+    numerical:
+      order: asc
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageRepository
+metadata:
+  name: core-frontend
+  namespace: flux-system
+spec:
+  secretRef:
+    name: registry-creds
+  image: ghcr.io/leptostack/core-frontend
+  interval: 5m
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImagePolicy
+metadata:
+  name: core-frontend-policy
+  namespace: flux-system
+spec:
+  imageRepositoryRef:
+    name: core-frontend
+  filterTags:
+    pattern: '[a-f0-9]+-(?P<ts>[0-9]+)'
+    extract: '$ts'
+  policy:
+    numerical:
+      order: asc
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageRepository
+metadata:
+  name: core-cms
+  namespace: flux-system
+spec:
+  secretRef:
+    name: registry-creds
+  image: ghcr.io/leptostack/core-cms
+  interval: 5m
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImagePolicy
+metadata:
+  name: core-cms-policy
+  namespace: flux-system
+spec:
+  imageRepositoryRef:
+    name: core-cms
+  filterTags:
+    pattern: '[a-f0-9]+-(?P<ts>[0-9]+)'
+    extract: '$ts'
+  policy:
+    numerical:
+      order: asc
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: module-core
+  namespace: flux-system
+spec:
+  interval: 720m0s
+  timeout: 30m
+  dependsOn:
+    - name: leptostack-operator
+    - name: keycloak-post
+  sourceRef:
+    kind: GitRepository
+    name: leptostack-base
+  path: ./leptostack/modules/core
+  prune: true
+  wait: true
+  postBuild:
+    substitute:
+      module_name: module-core
+    substituteFrom:
+      - kind: ConfigMap
+        name: leptostack-config
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageUpdateAutomation
+metadata:
+  name: module-core-images
+  namespace: flux-system
+spec:
+  interval: 10m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  git:
+    checkout:
+      ref:
+        branch: main
+    commit:
+      author:
+        email: fluxcdbot@users.noreply.github.com
+        name: fluxcdbot
+      messageTemplate: '{{range .Changed.Changes}}{{print .OldValue}} -> {{println .NewValue}}{{end}}'
+    push:
+      branch: main
+  update:
+    path: ./apps
+    strategy: Setters

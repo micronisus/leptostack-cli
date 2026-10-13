@@ -1,0 +1,52 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+    - flux-system
+    - ../../infrastructure
+    - ../../apps/leptostack/overlays/example
+
+patches:
+  - target:
+      kind: Kustomization
+      name: keycloak-crd
+      namespace: flux-system
+    patch: |-
+      - op: add
+        path: "/spec/patches"
+        value:
+          - target:
+              group: rbac.authorization.k8s.io
+              version: v1
+              kind: ClusterRoleBinding
+              name: keycloak-operator-clusterrole-binding
+            patch: |
+              - op: add
+                path: "/subjects"
+                value:
+                  - kind: ServiceAccount
+                    name: keycloak-operator
+                    namespace: example-keycloak
+  - target:
+      kind: Kustomization
+      name: infra-config
+      namespace: flux-system
+    patch: |-
+      - op: add
+        path: "/spec/patches"
+        value:
+          - target:
+              group: trust.cert-manager.io
+              version: v1alpha1
+              kind: Bundle
+              name: internal-ca-bundle
+            patch: |
+              - op: add
+                path: "/spec/target/namespaceSelector"
+                value:
+                  matchExpressions:
+                    - key: app.kubernetes.io/part-of
+                      operator: In
+                      values:
+                        - leptostack-example
+                        - leptostack-module-example

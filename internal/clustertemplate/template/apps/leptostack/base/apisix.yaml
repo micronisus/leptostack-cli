@@ -1,0 +1,67 @@
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: apisix
+  namespace: flux-system
+spec:
+  interval: 720m0s
+  timeout: 10m
+  dependsOn:
+    - name: infra-config
+  sourceRef:
+    kind: GitRepository
+    name: leptostack-base
+  path: ./leptostack/apisix
+  prune: true
+  wait: true
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: leptostack-config
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: apisix-post
+  namespace: flux-system
+spec:
+  interval: 720m0s
+  timeout: 10m
+  dependsOn:
+    - name: apisix
+  sourceRef:
+    kind: GitRepository
+    name: leptostack-base
+  path: ./leptostack/apisix/post
+  prune: true
+  wait: true
+  patches:
+    - target:
+        group: cert-manager.io
+        kind: Certificate
+        version: v1
+      patch: |-
+        apiVersion: cert-manager.io/v1
+        kind: Certificate
+        metadata:
+          name: not-used
+        spec:
+          dnsNames:
+            - "*.${leptostack_domain}"
+    - target:
+        group: apisix.apache.org
+        kind: ApisixTls
+        version: v2
+      patch: |-
+        apiVersion: apisix.apache.org/v2
+        kind: ApisixTls
+        metadata:
+          name: not-used
+        spec:
+          hosts:
+            - "*.${leptostack_domain}"
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: leptostack-config

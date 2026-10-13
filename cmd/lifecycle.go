@@ -126,7 +126,7 @@ func ensureFluxBootstrapped(ctx context.Context, app *cli.App, r *config.Resolve
 
 func createLeptostackBaseSecret(ctx context.Context, app *cli.App, r *config.Resolved, kube *kubernetes.Client) error {
 	app.IO.Errln("\nCreating leptostack-base secret in flux-system namespace...")
-	pat := r.Template.PAT
+	pat := r.Base.PAT
 	if pat == "" {
 		pat = r.Git.PAT
 	}
@@ -390,13 +390,13 @@ func newBootstrapCmd(app *cli.App) *cobra.Command {
 			return gm.RunBootstrap(ctx, force)
 		},
 	}
-	c.Flags().BoolVar(&force, "force", false, "Force the cluster-template resync")
+	c.Flags().BoolVar(&force, "force", false, "Force a resync of the embedded cluster template")
 	return c
 }
 
 func forceSuffix(force bool) string {
 	if force {
-		return " with a forced cluster-template resync"
+		return " with a forced resync"
 	}
 	return ""
 }

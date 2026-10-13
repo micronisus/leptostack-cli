@@ -1,0 +1,140 @@
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: apisix-internal
+  namespace: flux-system
+spec:
+  interval: 720m0s
+  timeout: 10m
+  dependsOn:
+    - name: infra-config
+  sourceRef:
+    kind: GitRepository
+    name: leptostack-base
+  path: ./leptostack/apisix
+  prune: true
+  wait: true
+  patches:
+    - target:
+        kind: Namespace
+        version: v1
+      patch: |-
+        - op: replace
+          path: /metadata/name
+          value: ingress-${cluster_name}-internal
+    - target:
+        group: networking.k8s.io
+        kind: NetworkPolicy
+        version: v1
+      patch: |-
+        - op: replace
+          path: /metadata/namespace
+          value: ingress-${cluster_name}-internal
+    - target:
+        group: helm.toolkit.fluxcd.io
+        kind: HelmRelease
+        version: v2
+      patch: |-
+        - op: replace
+          path: /metadata/namespace
+          value: ingress-${cluster_name}-internal
+        - op: replace
+          path: /spec/releaseName
+          value: apisix-internal
+        - op: replace
+          path: /spec/targetNamespace
+          value: ingress-${cluster_name}-internal
+        - op: replace
+          path: /spec/values/ingress-controller/config/kubernetes/ingressClass
+          value: ${cluster_name}-internal-apisix
+        - op: replace
+          path: /spec/values/ingress-controller/config/controllerName
+          value: apisix.apache.org/apisix-${cluster_name}-internal-controller
+        - op: replace
+          path: /spec/values/ingress-controller/config/leaderElection/id
+          value: apisix-${cluster_name}-internal-controller-leader
+        - op: replace
+          path: /spec/values/ingress-controller/apisix/adminService/namespace
+          value: ingress-${cluster_name}-internal
+        - op: add
+          path: /spec/values/ingress-controller/apisix/adminService/name
+          value: apisix-internal-admin
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: leptostack-config
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: apisix-internal-post
+  namespace: flux-system
+spec:
+  interval: 720m0s
+  timeout: 10m
+  dependsOn:
+    - name: apisix-internal
+  sourceRef:
+    kind: GitRepository
+    name: leptostack-base
+  path: ./leptostack/apisix/post
+  prune: true
+  wait: true
+  patches:
+    - target:
+        group: cert-manager.io
+        kind: Certificate
+        version: v1
+      patch: |-
+        - op: replace
+          path: /metadata/name
+          value: ${cluster_name}-internal-tls
+        - op: replace
+          path: /metadata/namespace
+          value: ingress-${cluster_name}-internal
+        - op: replace
+          path: /spec/secretName
+          value: ${cluster_name}-internal-tls
+        - op: replace
+          path: /spec/dnsNames/0
+          value: apisix-internal-gateway.ingress-${cluster_name}-internal.svc.cluster.local
+        - op: add
+          path: /spec/dnsNames/-
+          value: "api.${cluster_name}.internal"
+        - op: add
+          path: /spec/dnsNames/-
+          value: "*.api.${cluster_name}.internal"
+    - target:
+        group: apisix.apache.org
+        kind: ApisixTls
+        version: v2
+      patch: |-
+        - op: replace
+          path: /metadata/name
+          value: ${cluster_name}-internal-tls
+        - op: replace
+          path: /metadata/namespace
+          value: ingress-${cluster_name}-internal
+        - op: replace
+          path: /spec/ingressClassName
+          value: ${cluster_name}-internal-apisix
+        - op: replace
+          path: /spec/hosts/0
+          value: apisix-internal-gateway.ingress-${cluster_name}-internal.svc.cluster.local
+        - op: add
+          path: /spec/hosts/-
+          value: "api.${cluster_name}.internal"
+        - op: add
+          path: /spec/hosts/-
+          value: "*.api.${cluster_name}.internal"
+        - op: replace
+          path: /spec/secret/name
+          value: ${cluster_name}-internal-tls
+        - op: replace
+          path: /spec/secret/namespace
+          value: ingress-${cluster_name}-internal
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: leptostack-config

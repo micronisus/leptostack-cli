@@ -90,9 +90,12 @@ func LoadFrom(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-// stripDeprecatedFields removes keys that were removed from the schema so older
-// configuration files keep loading under strict unmarshalling. Currently it
-// drops clusters.*.vcluster.dnsTargetIP, which the CLI no longer uses.
+// stripDeprecatedFields removes or migrates keys that are no longer in the
+// schema so older configuration files keep loading under strict unmarshalling:
+//   - clusters.*.vcluster.dnsTargetIP is dropped (the CLI no longer uses it);
+//   - the removed template block (global and per-cluster) is migrated: its pat
+//     becomes base.pat when base.pat is unset, then the block is deleted (url
+//     and branch are discarded).
 func stripDeprecatedFields(b []byte) ([]byte, error) {
 	var raw map[string]any
 	if err := yaml.Unmarshal(b, &raw); err != nil {
@@ -100,11 +103,17 @@ func stripDeprecatedFields(b []byte) ([]byte, error) {
 		return b, nil
 	}
 	changed := false
+	if migrateTemplateBlock(raw) {
+		changed = true
+	}
 	if clusters, ok := raw["clusters"].(map[string]any); ok {
 		for _, entry := range clusters {
 			cluster, ok := entry.(map[string]any)
 			if !ok {
 				continue
+			}
+			if migrateTemplateBlock(cluster) {
+				changed = true
 			}
 			if vc, ok := cluster["vcluster"].(map[string]any); ok {
 				if _, present := vc["dnsTargetIP"]; present {
@@ -118,6 +127,30 @@ func stripDeprecatedFields(b []byte) ([]byte, error) {
 		return b, nil
 	}
 	return yaml.Marshal(raw)
+}
+
+// migrateTemplateBlock moves a deprecated template block's pat into base.pat
+// (when base.pat is unset) and removes the template block. It reports whether
+// the document was changed.
+func migrateTemplateBlock(doc map[string]any) bool {
+	tmpl, ok := doc["template"].(map[string]any)
+	if !ok {
+		return false
+	}
+	base, _ := doc["base"].(map[string]any)
+	if base == nil {
+		base = map[string]any{}
+	}
+	if pat, ok := tmpl["pat"]; ok {
+		if _, set := base["pat"]; !set {
+			base["pat"] = pat
+		}
+	}
+	if len(base) > 0 {
+		doc["base"] = base
+	}
+	delete(doc, "template")
+	return true
 }
 
 // Save writes the config to the default path.
@@ -203,14 +236,14 @@ func (c *Config) ApplyDefaults() {
 	if c.Registry.Repository == "" {
 		c.Registry.Repository = DefaultRegistryRepo
 	}
-	if c.Template == nil {
-		c.Template = &Template{}
+	if c.Base == nil {
+		c.Base = &Base{}
 	}
-	if c.Template.URL == "" {
-		c.Template.URL = DefaultTemplateURL
+	if c.Base.URL == "" {
+		c.Base.URL = DefaultBaseURL
 	}
-	if c.Template.Branch == "" {
-		c.Template.Branch = DefaultTemplateBranch
+	if c.Base.Branch == "" {
+		c.Base.Branch = DefaultBaseBranch
 	}
 }
 
