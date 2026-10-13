@@ -348,6 +348,8 @@ clusters:
     vcluster:
       hostContext: kind-baremetal
       hostNamespace: alice
+      # metricsServer: false   # disable the vcluster metrics-server integration
+      # oidc: false            # disable vcluster API server OIDC authentication
 
 git:
   server: github            # github | gitea | gitlab
@@ -380,6 +382,14 @@ preferences:
   to disk. `config view` redacts them unless `--show-secrets`.
 - **No code execution.** Unlike the shell config, the YAML cannot execute
   anything when loaded.
+- **vcluster feature toggles.** `vcluster.metricsServer` and `vcluster.oidc`
+  default to `true`. Disable them at `config init` with
+  `--disable-vcluster-metrics` / `--disable-vcluster-oidc`, or later with
+  `config set clusters.<name>.vcluster.metricsServer false`. With OIDC disabled
+  the API server gets no `--oidc-*` flags and the OIDC CA secret and
+  ClusterRoleBinding are not created. The values file is applied when the
+  vcluster is created, so recreate an existing cluster (`leptostack delete`) for
+  a toggle change to take effect.
 - **Config commands:** `config init` (wizard, `--non-interactive`, `--from-file`),
   `config view [--show-secrets]`, `config set <key> <value> [--secret]`,
   `config unset <key>`, `config use-context <cluster>`.
@@ -448,7 +458,7 @@ covers both platforms.
 ```text
 scripts/
   ci.sh       # gofmt check, go vet, go build, windows/darwin cross-build+vet, go test -race, shellcheck, optional golangci-lint
-  release.sh  # build all platform artifacts with GoReleaser, then publish to the running forge
+  release.sh  # build platforms with GoReleaser, build+push the container image, then publish to the running forge
 
 .github/workflows/    # GitHub Actions: ci.yml (linux + windows), release.yml
 .forgejo/workflows/   # Forgejo Actions: ci.yml, release.yml (linux-only)
@@ -462,8 +472,12 @@ scripts/
   Linux-only; its `scripts/ci.sh` run still covers Windows/Darwin compilation.
 - **Release** (`release.yml`, on `v*` tags): checks out with full history,
   installs GoReleaser from the Go module proxy, builds archives + `checksums.txt`
-  for linux/darwin/windows × amd64/arm64, and publishes the release. Run it
-  locally with `RELEASE_VERSION=x.y.z make release`.
+  for linux/darwin/windows × amd64/arm64, and publishes the release. On GitHub it
+  also builds the `Dockerfile` and pushes the image to
+  `ghcr.io/<owner>/leptostack-cli` — the same organization as the repository —
+  authenticated with the workflow's scoped `GITHUB_TOKEN` (`packages: write`).
+  Override the image with `IMAGE_REPOSITORY=<ref>` or skip it with
+  `PUBLISH_IMAGE=0`. Run it locally with `RELEASE_VERSION=x.y.z make release`.
 
 `scripts/release.sh` detects the forge and publishes accordingly:
 

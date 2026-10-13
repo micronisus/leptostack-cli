@@ -16,6 +16,20 @@ func atoiOr(s string, def int) int {
 	return n
 }
 
+// boolPtr returns a pointer to b, for optional boolean configuration fields.
+func boolPtr(b bool) *bool { return &b }
+
+// parseConfigBool parses a user-supplied boolean configuration value.
+func parseConfigBool(value string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "true", "1", "yes", "on":
+		return true, nil
+	case "false", "0", "no", "off":
+		return false, nil
+	}
+	return false, cli.Exitf(cli.ExitUsage, "expected a boolean value (true or false), got %q", value)
+}
+
 // setConfigValue sets a dotted configuration key with enum/format validation.
 func setConfigValue(cfg *config.Config, key, value string, secret bool) error {
 	key = strings.TrimSpace(key)
@@ -107,6 +121,18 @@ func setClusterValue(cfg *config.Config, key, value string) error {
 		ensureVCluster(cl).HostContext = value
 	case "vcluster.hostNamespace":
 		ensureVCluster(cl).HostNamespace = value
+	case "vcluster.metricsServer":
+		b, err := parseConfigBool(value)
+		if err != nil {
+			return err
+		}
+		ensureVCluster(cl).Metrics = &b
+	case "vcluster.oidc":
+		b, err := parseConfigBool(value)
+		if err != nil {
+			return err
+		}
+		ensureVCluster(cl).OIDC = &b
 	case "minikube.cpus":
 		ensureMinikube(cl).CPUs = atoiOr(value, config.DefaultMinikubeCPUs)
 	case "minikube.memoryMB":

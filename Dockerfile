@@ -2,7 +2,8 @@
 #
 # leptostack CLI container image: the static binary plus every external tool the
 # CLI shells out to (kubectl, flux, vcluster, helm, git, openssl, bash).
-# Published as ghcr.io/leptostack/leptostack-cli:<tag> by scripts/release.sh.
+# Published as ghcr.io/<owner>/leptostack-cli:<tag> (the repository's
+# organization) by scripts/release.sh.
 
 FROM golang:1.24-bookworm AS build
 WORKDIR /src

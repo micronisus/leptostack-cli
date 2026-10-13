@@ -14,29 +14,31 @@ import (
 )
 
 type initOptions struct {
-	cluster        string
-	provider       string
-	clusterName    string
-	leptostackName string
-	domain         string
-	hostContext    string
-	hostNamespace  string
-	cpus           int
-	memoryMB       int
-	repoURL        string
-	branch         string
-	clusterPath    string
-	gitServer      string
-	gitPATStdin    bool
-	gitPAT         string
-	basePAT        bool
-	baseURL        string
-	baseBranch     string
-	registryRepo   string
-	registryStdin  bool
-	registryCreds  string
-	fromFile       string
-	nonInteractive bool
+	cluster            string
+	provider           string
+	clusterName        string
+	leptostackName     string
+	domain             string
+	hostContext        string
+	hostNamespace      string
+	vclusterMetricsOff bool
+	vclusterOIDCOff    bool
+	cpus               int
+	memoryMB           int
+	repoURL            string
+	branch             string
+	clusterPath        string
+	gitServer          string
+	gitPATStdin        bool
+	gitPAT             string
+	basePAT            bool
+	baseURL            string
+	baseBranch         string
+	registryRepo       string
+	registryStdin      bool
+	registryCreds      string
+	fromFile           string
+	nonInteractive     bool
 }
 
 func newConfigCmd(app *cli.App) *cobra.Command {
@@ -77,6 +79,8 @@ func newConfigInitCmd(app *cli.App) *cobra.Command {
 	f.StringVar(&opts.domain, "domain", "", "LeptoStack domain")
 	f.StringVar(&opts.hostContext, "host-context", "", "vcluster host Kubernetes context")
 	f.StringVar(&opts.hostNamespace, "host-namespace", "", "vcluster host namespace")
+	f.BoolVar(&opts.vclusterMetricsOff, "disable-vcluster-metrics", false, "Disable the vcluster metrics-server integration")
+	f.BoolVar(&opts.vclusterOIDCOff, "disable-vcluster-oidc", false, "Disable vcluster API server OIDC authentication")
 	f.IntVar(&opts.cpus, "cpus", 0, "minikube CPUs")
 	f.IntVar(&opts.memoryMB, "memory", 0, "minikube memory in MB")
 	f.StringVar(&opts.repoURL, "repo-url", "", "GitOps repository URL, or 'auto' to create one on start (default: auto)")
@@ -234,6 +238,12 @@ func runConfigInit(cmd *cobra.Command, app *cli.App, opts *initOptions) error {
 				return err
 			}
 			cl.VCluster.HostNamespace = v
+		}
+		if opts.vclusterMetricsOff {
+			cl.VCluster.Metrics = boolPtr(false)
+		}
+		if opts.vclusterOIDCOff {
+			cl.VCluster.OIDC = boolPtr(false)
 		}
 	case config.ProviderMinikube:
 		if cl.Minikube == nil {

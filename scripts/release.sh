@@ -139,7 +139,20 @@ fi
 
 # --- container image ---------------------------------------------------------
 
-IMAGE_REPOSITORY="${IMAGE_REPOSITORY:-ghcr.io/leptostack/leptostack-cli}"
+# The image lives in the same organization as the repository
+# (ghcr.io/<owner>/<repo>). The slug comes from the CI-provided repository, then
+# the git remote; override with IMAGE_REPOSITORY.
+default_image_repository() {
+  local repo="${GITHUB_REPOSITORY:-${FORGEJO_REPOSITORY:-${GITEA_REPOSITORY:-}}}"
+  if [ -z "$repo" ]; then
+    repo="$(git remote get-url origin 2>/dev/null | sed -E 's#.*[:/]([^/]+/[^/]+)$#\1#' | sed 's/\.git$//' || true)"
+  fi
+  [ -n "$repo" ] || return 1
+  printf 'ghcr.io/%s' "$repo"
+}
+
+IMAGE_REPOSITORY="${IMAGE_REPOSITORY:-$(default_image_repository || true)}"
+[ -n "$IMAGE_REPOSITORY" ] || IMAGE_REPOSITORY="ghcr.io/micronisus/leptostack-cli"
 PUBLISH_IMAGE="${PUBLISH_IMAGE:-auto}"
 
 container_runtime() {

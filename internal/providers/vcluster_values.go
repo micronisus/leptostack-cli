@@ -2,11 +2,19 @@ package providers
 
 import (
 	"strings"
+	"text/template"
 
 	"github.com/micronisus/leptostack-cli/internal/config"
 )
 
-// vclusterValuesTemplate mirrors write_vcluster_values from the bash script.
+// vclusterValuesTemplate mirrors write_vcluster_values from the bash script with
+// two optional features: the OIDC sections (the oidc-ca volume and the API
+// server --oidc-* extra args) render only when OIDC is enabled, and the
+// metrics-server integration is toggled by metricsServer.enabled. Both default
+// to enabled.
+//
+// The Corefile inside overwriteConfig contains no template actions, only the
+// single braces of the Corefile DSL, so text/template can parse it verbatim.
 const vclusterValuesTemplate = `controlPlane:
   statefulSet:
     resources:
@@ -17,16 +25,16 @@ const vclusterValuesTemplate = `controlPlane:
         cpu: "4"
         memory: "8Gi"
         ephemeral-storage: "20Gi"
-    persistence:
+{{ if .OIDC }}    persistence:
       addVolumes:
         - name: oidc-ca
           secret:
-            secretName: __CLUSTER_NAME__-oidc-ca
+            secretName: {{ .ClusterName }}-oidc-ca
       addVolumeMounts:
         - name: oidc-ca
           mountPath: /etc/oidc
           readOnly: true
-  coredns:
+{{ end }}  coredns:
     overwriteConfig: |-
       .:1053 {
           errors
@@ -35,8 +43,8 @@ const vclusterValuesTemplate = `controlPlane:
 
           rewrite name regex .*\.nodes\.vcluster\.com kubernetes.default.svc.cluster.local
 
-          rewrite name regex ^((.*)\.)?api\.__CLUSTER_NAME__\.internal\.$ apisix-internal-gateway.ingress-__CLUSTER_NAME__-internal.svc.cluster.local answer auto
-          rewrite name regex ^(.+\.)?__LEPTOSTACK_DOMAIN_REGEX__\.$ apisix-gateway.ingress-__CLUSTER_NAME__.svc.cluster.local answer auto
+          rewrite name regex ^((.*)\.)?api\.{{ .ClusterName }}\.internal\.$ apisix-internal-gateway.ingress-{{ .ClusterName }}-internal.svc.cluster.local answer auto
+          rewrite name regex ^(.+\.)?{{ .DomainRegex }}\.$ apisix-gateway.ingress-{{ .ClusterName }}.svc.cluster.local answer auto
 
           kubernetes cluster.local in-addr.arpa ip6.arpa {
               pods insecure
@@ -61,19 +69,20 @@ const vclusterValuesTemplate = `controlPlane:
   distro:
     k8s:
       apiServer:
-        extraArgs:
-          - --oidc-issuer-url=https://__LEPTOSTACK_NAME__-sso.__LEPTOSTACK_DOMAIN__/realms/__CLUSTER_NAME__
+{{ if .OIDC }}        extraArgs:
+          - --oidc-issuer-url=https://{{ .LeptostackName }}-sso.{{ .Domain }}/realms/{{ .ClusterName }}
           - --oidc-client-id=che
           - --oidc-username-claim=email
           - --oidc-groups-claim=groups
           - --oidc-ca-file=/etc/oidc/ca.crt
-  service:
+{{ else }}        extraArgs: []
+{{ end }}  service:
     enabled: true
     spec:
       type: LoadBalancer
 integrations:
   metricsServer:
-    enabled: true
+    enabled: {{ .Metrics }}
     apiService:
       service:
         name: rke2-metrics-server
@@ -81,15 +90,42 @@ integrations:
         port: 443
     nodes: true
     pods: true
+# The host ServiceAccount is namespace-scoped (Nexus provisions a RoleBinding to
+# the admin ClusterRole, never cluster-scoped grants), so the vCluster must not
+# try to create its syncer ClusterRole. Node metrics stay disabled because they
+# would require that cluster-scoped access.
+rbac:
+  clusterRole:
+    enabled: false
 `
 
-// renderVClusterValues substitutes the cluster-specific placeholders.
+// vclusterValuesTmpl is parsed once; the template is static so a parse error is
+// a programming error and panics at init.
+var vclusterValuesTmpl = template.Must(template.New("vcluster-values").Parse(vclusterValuesTemplate))
+
+// vclusterValuesData are the inputs to the values template.
+type vclusterValuesData struct {
+	ClusterName    string
+	LeptostackName string
+	Domain         string
+	DomainRegex    string
+	OIDC           bool
+	Metrics        bool
+}
+
+// renderVClusterValues renders the vcluster values file for a resolved cluster,
+// honoring the OIDC and metrics feature toggles.
 func renderVClusterValues(r *config.Resolved) string {
-	domainRegex := strings.ReplaceAll(r.Domain, ".", `\.`)
-	out := vclusterValuesTemplate
-	out = strings.ReplaceAll(out, "__CLUSTER_NAME__", r.ClusterName)
-	out = strings.ReplaceAll(out, "__LEPTOSTACK_NAME__", r.LeptostackName)
-	out = strings.ReplaceAll(out, "__LEPTOSTACK_DOMAIN_REGEX__", domainRegex)
-	out = strings.ReplaceAll(out, "__LEPTOSTACK_DOMAIN__", r.Domain)
-	return out
+	data := vclusterValuesData{
+		ClusterName:    r.ClusterName,
+		LeptostackName: r.LeptostackName,
+		Domain:         r.Domain,
+		DomainRegex:    strings.ReplaceAll(r.Domain, ".", `\.`),
+		OIDC:           r.VCluster.OIDCEnabled(),
+		Metrics:        r.VCluster.MetricsEnabled(),
+	}
+	var buf strings.Builder
+	// Execute only errors when the writer fails; strings.Builder never does.
+	_ = vclusterValuesTmpl.Execute(&buf, data)
+	return buf.String()
 }

@@ -58,7 +58,21 @@ type Minikube struct {
 type VCluster struct {
 	HostContext   string `json:"hostContext,omitempty"`
 	HostNamespace string `json:"hostNamespace,omitempty"`
+	// Metrics toggles the vcluster metrics-server integration. Unset means
+	// enabled (the default).
+	Metrics *bool `json:"metricsServer,omitempty"`
+	// OIDC toggles vcluster API server OIDC authentication. Unset means enabled
+	// (the default).
+	OIDC *bool `json:"oidc,omitempty"`
 }
+
+// MetricsEnabled reports whether the vcluster metrics-server integration is on.
+// An unset value defaults to enabled.
+func (v VCluster) MetricsEnabled() bool { return v.Metrics == nil || *v.Metrics }
+
+// OIDCEnabled reports whether vcluster API server OIDC authentication is on. An
+// unset value defaults to enabled.
+func (v VCluster) OIDCEnabled() bool { return v.OIDC == nil || *v.OIDC }
 
 // Git holds the GitOps repository configuration.
 type Git struct {

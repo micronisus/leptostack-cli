@@ -33,8 +33,14 @@ func (v *VCluster) Start(ctx context.Context) error {
 	if err := v.requireHost(ctx); err != nil {
 		return err
 	}
-	if err := v.ensureOIDCCASecret(ctx); err != nil {
+	oidc := v.Resolved.VCluster.OIDCEnabled()
+	if err := v.ensureHostNamespace(ctx); err != nil {
 		return err
+	}
+	if oidc {
+		if err := v.publishOIDCCASecret(ctx); err != nil {
+			return err
+		}
 	}
 
 	valuesFile, cleanup, err := v.writeValues()
@@ -63,7 +69,11 @@ func (v *VCluster) Start(ctx context.Context) error {
 		v.IO.Errf("Creating vcluster %s in namespace %s on context %s...\n", v.Resolved.ClusterName, v.Resolved.VCluster.HostNamespace, v.Resolved.VCluster.HostContext)
 		// Drop a stale context with the same generated name so create does not prompt.
 		_ = deleteContext(ctx, v.R, v.Kubeconfig, v.Resolved.KubeContext)
-		cmd := v.vclusterCmd("create", v.Resolved.ClusterName, "--values", valuesFile)
+		// The host namespace is created above (ensureHostNamespace). Pass
+		// --create-namespace=false so Helm does not attempt a cluster-scoped
+		// namespace create/get, which a namespace-scoped ServiceAccount
+		// (the Nexus Che Job) is not allowed to perform.
+		cmd := v.vclusterCmd(v.createArgs(valuesFile)...)
 		if err := v.R.Run(ctx, cmd); err != nil {
 			return fmt.Errorf("failed to create vcluster %s: %w", v.Resolved.ClusterName, err)
 		}
@@ -72,11 +82,21 @@ func (v *VCluster) Start(ctx context.Context) error {
 		}
 	}
 
-	if err := v.applyOIDCRBAC(ctx); err != nil {
-		return err
+	if oidc {
+		if err := v.applyOIDCRBAC(ctx); err != nil {
+			return err
+		}
 	}
 	v.IO.Errln()
 	return nil
+}
+
+// createArgs are the `vcluster create` arguments. `--create-namespace=false`
+// keeps the operation namespace-scoped: the host namespace already exists
+// (created by ensureHostNamespace), and a namespace-scoped ServiceAccount (the
+// Nexus Che Job) cannot create or read Namespaces at cluster scope.
+func (v *VCluster) createArgs(valuesFile string) []string {
+	return []string{"create", v.Resolved.ClusterName, "--values", valuesFile, "--create-namespace=false"}
 }
 
 // Stop pauses the vcluster.
@@ -192,21 +212,27 @@ func (v *VCluster) vclusterEnv() map[string]string {
 	return map[string]string{"KUBECONFIG": v.Kubeconfig}
 }
 
-// ensureOIDCCASecret publishes the internal CA to the host namespace for the
-// vcluster API server OIDC configuration.
-func (v *VCluster) ensureOIDCCASecret(ctx context.Context) error {
-	if err := v.CA.Ensure(); err != nil {
-		return err
-	}
+// ensureHostNamespace creates the vcluster host namespace when it is absent.
+// The host ServiceAccount is namespace-scoped, so the namespace must exist
+// before `vcluster create --create-namespace=false`.
+func (v *VCluster) ensureHostNamespace(ctx context.Context) error {
 	ns := v.Resolved.VCluster.HostNamespace
-
 	if err := v.R.RunDiscard(ctx, execx.Cmd{Name: "kubectl", Args: v.hostKubeArgs("get", "namespace", ns)}); err != nil {
 		v.IO.Errf("Creating host namespace %s...\n", ns)
 		if err := v.R.Run(ctx, execx.Cmd{Name: "kubectl", Args: v.hostKubeArgs("create", "namespace", ns)}); err != nil {
 			return err
 		}
 	}
+	return nil
+}
 
+// publishOIDCCASecret publishes the internal CA to the host namespace for the
+// vcluster API server OIDC configuration.
+func (v *VCluster) publishOIDCCASecret(ctx context.Context) error {
+	if err := v.CA.Ensure(); err != nil {
+		return err
+	}
+	ns := v.Resolved.VCluster.HostNamespace
 	secretName := v.Resolved.ClusterName + "-oidc-ca"
 	v.IO.Errf("Publishing the internal CA to host secret %s/%s for the vCluster API server OIDC configuration...\n", ns, secretName)
 	dry, err := v.R.Output(ctx, execx.Cmd{Name: "kubectl", Args: v.hostKubeArgs(

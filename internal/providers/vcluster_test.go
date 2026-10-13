@@ -89,6 +89,32 @@ func TestVclusterCmdCarriesKubeconfigEnvNotFlag(t *testing.T) {
 	}
 }
 
+func TestCreateArgsKeepOperationNamespaceScoped(t *testing.T) {
+	v := testVCluster("/tmp/che.yaml")
+	got := v.createArgs("/tmp/values.yaml")
+	want := []string{
+		"create", "dev-alice",
+		"--values", "/tmp/values.yaml",
+		"--create-namespace=false",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("createArgs = %v, want %v", got, want)
+	}
+}
+
+func TestVClusterValuesDisableSyncerClusterRole(t *testing.T) {
+	values := renderVClusterValues(&config.Resolved{
+		ClusterName:    "dev-alice",
+		LeptostackName: "portal",
+		Domain:         "alice-leptostack.test",
+	})
+	if !strings.Contains(values, "rbac:") ||
+		!strings.Contains(values, "clusterRole:") ||
+		!strings.Contains(values, "enabled: false") {
+		t.Fatalf("vcluster values must disable the syncer ClusterRole for the namespace-scoped host SA:\n%s", values)
+	}
+}
+
 // TestVClusterKubeconfigPropagation drives Exists and Status through the real
 // execx runner against fake vcluster/kubectl shims and asserts the kubeconfig
 // reaches every invocation: --kubeconfig for kubectl, KUBECONFIG for vcluster.
