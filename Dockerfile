@@ -24,9 +24,9 @@ FROM debian:bookworm-slim AS runtime
 
 # Tool versions are pinned so images are reproducible; override with --build-arg.
 ARG TARGETARCH=amd64
-ARG KUBECTL_VERSION=v1.31.3
-ARG FLUX_VERSION=2.8.7
-ARG HELM_VERSION=v3.16.4
+ARG KUBECTL_VERSION=v1.37.1
+ARG FLUX_VERSION=2.9.6
+ARG HELM_VERSION=v4.3.0
 ARG VCLUSTER_VERSION=0.37.3
 
 ENV DEBIAN_FRONTEND=noninteractive
