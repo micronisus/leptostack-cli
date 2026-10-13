@@ -12,26 +12,7 @@ func newReconcileCmd(app *cli.App) *cobra.Command {
 		Aliases: []string{"reconcile-kustomization"},
 		Short:   "Trigger Flux reconciliation",
 		Args:    cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			// Legacy bare `reconcile` behavior: flux-system with source, then
-			// the leptostack-base source.
-			app.IO.Errf("Bare 'reconcile' is deprecated; use 'leptostack reconcile kustomization flux-system --with-source'.\n")
-			r, err := resolve(app)
-			if err != nil {
-				return err
-			}
-			ctx, cancel := app.Context(defaultReconcileTime)
-			defer cancel()
-			if err := requireReachable(ctx, app, kubeFor(app, r)); err != nil {
-				return err
-			}
-			app.IO.Errln("Reconciling flux-system...")
-			if err := fluxFor(app, r).ReconcileKustomization(ctx, "flux-system", true, app.Timeout(defaultReconcileTime)); err != nil {
-				return err
-			}
-			app.IO.Errln("Reconciling leptostack-base source...")
-			return fluxFor(app, r).ReconcileSource(ctx, "git", "leptostack-base", app.Timeout(defaultReconcileTime))
-		},
+		RunE:    func(cmd *cobra.Command, args []string) error { return cmd.Help() },
 	}
 	c.AddCommand(newReconcileKustomizationCmd(app), newReconcileSourceCmd(app))
 	return c

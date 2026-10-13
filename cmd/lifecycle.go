@@ -184,7 +184,7 @@ func ensureCertificateRemoved(ctx context.Context, app *cli.App, kube *kubernete
 		}
 	}
 	return cli.Exitf(cli.ExitFailure,
-		"certificate cert-manager/internal-ca keeps being recreated: the infra-config delete patch is missing from the GitOps repository; run 'leptostack sync cluster --force' (or 'leptostack delete') and retry")
+		"certificate cert-manager/internal-ca keeps being recreated: the infra-config delete patch is missing from the GitOps repository; run 'leptostack sync cluster --force' and retry")
 }
 
 func uploadRegistryCredentials(ctx context.Context, app *cli.App, r *config.Resolved, kube *kubernetes.Client) error {
@@ -277,10 +277,26 @@ func newConnectCmd(app *cli.App) *cobra.Command {
 }
 
 func newDeleteCmd(app *cli.App) *cobra.Command {
-	var force, keepRepo bool
 	c := &cobra.Command{
 		Use:   "delete",
-		Short: "Delete the cluster and optionally recreate it",
+		Short: "Delete the cluster or a cluster object",
+		Args:  cobra.NoArgs,
+		RunE:  func(cmd *cobra.Command, args []string) error { return cmd.Help() },
+	}
+	c.AddCommand(
+		newDeleteClusterCmd(app),
+		newDeleteSourceCmd(app),
+		newDeleteSecretCmd(app),
+		newDeletePortForwardCmd(app),
+	)
+	return c
+}
+
+func newDeleteClusterCmd(app *cli.App) *cobra.Command {
+	var force bool
+	c := &cobra.Command{
+		Use:   "cluster",
+		Short: "Delete the cluster",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r, err := resolve(app)
@@ -293,7 +309,7 @@ func newDeleteCmd(app *cli.App) *cobra.Command {
 			if force {
 				app.Flags.Yes = true
 			}
-			ok, err := app.Confirm(fmt.Sprintf("This will delete the %s cluster '%s' and recreate it. Are you sure?", r.Provider, r.ClusterName))
+			ok, err := app.Confirm(fmt.Sprintf("This will delete the %s cluster '%s'. Are you sure?", r.Provider, r.ClusterName))
 			if err != nil {
 				return err
 			}
@@ -303,56 +319,11 @@ func newDeleteCmd(app *cli.App) *cobra.Command {
 			}
 
 			provider := providers.New(providerDeps(app, r))
-			if err := provider.Delete(ctx); err != nil {
-				return err
-			}
-			app.IO.Errln()
-
-			if keepRepo {
-				return runStartKeepRepo(ctx, app, r)
-			}
-			return runStartForceResync(ctx, app, r)
+			return provider.Delete(ctx)
 		},
 	}
 	c.Flags().BoolVar(&force, "force", false, "Skip the confirmation prompt")
-	c.Flags().BoolVar(&keepRepo, "keep-repo", false, "Keep the existing GitOps repository contents")
-	c.AddCommand(newDeleteSourceCmd(app), newDeleteSecretCmd(app), newDeletePortForwardCmd(app))
 	return c
-}
-
-func runStartForceResync(ctx context.Context, app *cli.App, r *config.Resolved) error {
-	return runStartWithResync(ctx, app, r, true)
-}
-
-func runStartKeepRepo(ctx context.Context, app *cli.App, r *config.Resolved) error {
-	return runStartWithResync(ctx, app, r, false)
-}
-
-func runStartWithResync(ctx context.Context, app *cli.App, r *config.Resolved, force bool) error {
-	store := ca.Default(config.Dir())
-	_ = store.Ensure()
-	provider := providers.New(providerDeps(app, r))
-	if err := provider.Start(ctx); err != nil {
-		if force {
-			return err
-		}
-		return err
-	}
-	kube := kubeFor(app, r)
-	if err := provisionAutoRepository(ctx, app, r); err != nil {
-		return err
-	}
-	gm := gitops.New(runner(app), app.IO, r, fluxFor(app, r))
-	if err := gm.RunBootstrap(ctx, force); err != nil {
-		return err
-	}
-	if err := createLeptostackBaseSecret(ctx, app, r, kube); err != nil {
-		return err
-	}
-	if err := applyCASecret(ctx, app, r, kube, store); err != nil {
-		return err
-	}
-	return uploadRegistryCredentials(ctx, app, r, kube)
 }
 
 func newBootstrapCmd(app *cli.App) *cobra.Command {

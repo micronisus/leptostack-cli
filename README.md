@@ -117,7 +117,7 @@ Two rules define the command surface:
    ```
 
 2. **Cluster lifecycle** uses bare verbs (`start`, `stop`, `restart`, `status`,
-   `connect`, `delete`), acting on the selected cluster.
+   `connect`), acting on the selected cluster; `delete cluster` removes it.
 
 Lists are plural, single objects singular, all lowercase. Command names contain
 hyphens only where already established (`port-forward`).
@@ -130,7 +130,7 @@ leptostack
 ├── upgrade [--check]                    # self-update from GitHub releases
 ├── completion bash|zsh|fish|powershell
 ├── doctor [-o json]                     # prerequisites: kubectl/flux/minikube/…
-├── start | stop | restart | status | connect | delete
+├── start | stop | restart | status | connect
 ├── get
 │   ├── clusters | cluster               # all/single configured clusters + live state
 │   ├── kustomizations | sources | secrets | context | port-forwards | events
@@ -138,6 +138,7 @@ leptostack
 │   ├── source git|helm|bucket|oci <name>
 │   └── secret git|docker-registry|tls|opaque <name>
 ├── delete
+│   ├── cluster
 │   ├── source <type>/<name> | secret <name> | port-forward <service>|--all
 ├── reconcile kustomization|source [name]
 ├── wait kustomization <name>|all [--ready] [--timeout]
@@ -200,7 +201,7 @@ kubectl --context "$ctx" get pods -A
 leptostack wait kustomization all --ready --timeout 20m
 
 # Non-interactive delete
-leptostack delete --yes
+leptostack delete cluster --yes
 
 # Credentials without a prompt or disk round-trip
 op read "op://LeptoStack/ghcr/password" \
@@ -318,7 +319,7 @@ leptostack enable kustomization all                     # restore
 Disabled kustomizations keep their applied objects; Flux suspends
 *reconciliation*, not resources. Suspended state is surfaced in
 `get kustomizations` and `status`. This is a cluster-side override: a redeploy
-from Git (`sync cluster`, `delete`) restores the committed state.
+from Git (`sync cluster`) restores the committed state.
 
 ## Configuration
 
@@ -388,8 +389,9 @@ preferences:
   `config set clusters.<name>.vcluster.metricsServer false`. With OIDC disabled
   the API server gets no `--oidc-*` flags and the OIDC CA secret and
   ClusterRoleBinding are not created. The values file is applied when the
-  vcluster is created, so recreate an existing cluster (`leptostack delete`) for
-  a toggle change to take effect.
+  vcluster is created, so recreate an existing cluster
+  (`leptostack delete cluster && leptostack start`) for a toggle change to take
+  effect.
 - **Config commands:** `config init` (wizard, `--non-interactive`, `--from-file`),
   `config view [--show-secrets]`, `config set <key> <value> [--secret]`,
   `config unset <key>`, `config use-context <cluster>`.
@@ -401,15 +403,15 @@ YAML config does, it is imported as a single cluster named after its
 `CLUSTER_NAME` value and set as `current-context`. The original file is kept.
 Single-cluster users notice nothing.
 
-Old commands work as deprecated aliases (a one-line hint is printed to stderr):
+The old flat command names were removed; use the current grammar:
 
-| Old command | New command |
+| Old shell command | Current command |
 |---|---|
 | `configure` | `config init` |
-| `reset` | `delete` |
+| `reset` | `delete cluster` |
 | `reconnect` | `connect` |
 | `rebootstrap` | `bootstrap` |
-| `reconcile` | `reconcile kustomization flux-system --with-source` |
+| `reconcile` (bare) | `reconcile kustomization flux-system --with-source` |
 | `update-flux` | `sync flux` |
 | `events` | `get events -w` |
 | `update-dns` | `dns update` |
@@ -417,10 +419,7 @@ Old commands work as deprecated aliases (a one-line hint is printed to stderr):
 | `set-registry-creds` | `registry set-credentials` |
 | `get-context` | `get context -o name` |
 | `port-forward <svc>` | foreground by default; `-d` detaches |
-| `port-forward all` / `port-forward stop` | `port-forward all` / `delete port-forward --all` |
-
-Fallback during migration: if `leptostack` is unavailable, `get-context` can be
-replaced by `leptostack get context -o name`.
+| `port-forward stop` | `delete port-forward --all` |
 
 ## Development
 

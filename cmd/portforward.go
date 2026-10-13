@@ -65,15 +65,6 @@ func runPortForward(cmd *cobra.Command, app *cli.App, service string, opts portF
 		return runDetachedChild(app, r, service, opts)
 	}
 
-	// Legacy spelling: `port-forward stop`.
-	if service == "stop" {
-		app.IO.Errf("port-forward stop is deprecated; use 'leptostack delete port-forward --all'.\n")
-		if n := stopAllPortForwards(app, r.Name); n == 0 {
-			app.IO.Errln("No active port-forwards.")
-		}
-		return nil
-	}
-
 	if service == "all" {
 		for _, s := range portforward.Catalog(r) {
 			if err := startDetached(app, r, s.Name, opts); err != nil {

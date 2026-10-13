@@ -115,6 +115,5 @@ Exit codes:
 		newLogsCmd(app),
 	)
 
-	registerDeprecatedAliases(root, app)
 	return root
 }

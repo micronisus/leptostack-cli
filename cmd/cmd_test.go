@@ -303,21 +303,6 @@ func TestDisableKustomizationPatches(t *testing.T) {
 	}
 }
 
-func TestDeprecatedAliasHint(t *testing.T) {
-	newEnv(t)
-	testutil.SetHomeConfig(t, testConfig)
-	out, errOut, code := runCLI(t, "", "get-context")
-	if code != 0 {
-		t.Fatalf("exit code = %d", code)
-	}
-	if !strings.Contains(errOut, "deprecated") {
-		t.Fatalf("expected deprecation hint, got %q", errOut)
-	}
-	if strings.TrimSpace(out) != "leptostack-local" {
-		t.Fatalf("context = %q", out)
-	}
-}
-
 func TestConfigInitNonInteractive(t *testing.T) {
 	newEnv(t)
 	path := testutil.SetHomeConfig(t, "")
