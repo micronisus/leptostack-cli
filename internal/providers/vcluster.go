@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/micronisus/leptostack-cli/internal/config"
 	"github.com/micronisus/leptostack-cli/internal/execx"
 	"github.com/micronisus/leptostack-cli/internal/runtime"
 )
@@ -77,7 +78,12 @@ func (v *VCluster) Start(ctx context.Context) error {
 		if err := v.R.Run(ctx, cmd); err != nil {
 			return fmt.Errorf("failed to create vcluster %s: %w", v.Resolved.ClusterName, err)
 		}
-		if err := v.adoptContext(ctx); err != nil {
+		if v.apiServerIsClusterIP() {
+			// create ran with --connect=false, so connect explicitly.
+			if err := v.Connect(ctx); err != nil {
+				return err
+			}
+		} else if err := v.adoptContext(ctx); err != nil {
 			return err
 		}
 	}
@@ -96,7 +102,33 @@ func (v *VCluster) Start(ctx context.Context) error {
 // (created by ensureHostNamespace), and a namespace-scoped ServiceAccount (the
 // Nexus Che Job) cannot create or read Namespaces at cluster scope.
 func (v *VCluster) createArgs(valuesFile string) []string {
-	return []string{"create", v.Resolved.ClusterName, "--values", valuesFile, "--create-namespace=false"}
+	args := []string{"create", v.Resolved.ClusterName, "--values", valuesFile, "--create-namespace=false"}
+	if v.apiServerIsClusterIP() {
+		// A ClusterIP API server is not reachable from outside, so `vcluster
+		// create` would hold a foreground port-forward. Connect explicitly with
+		// the in-cluster Service address instead (see connectArgs).
+		args = append(args, "--connect=false")
+	}
+	return args
+}
+
+// apiServerIsClusterIP reports whether the vcluster API server Service uses the
+// ClusterIP type (i.e. it has no externally reachable endpoint).
+func (v *VCluster) apiServerIsClusterIP() bool {
+	return v.Resolved.VCluster.APIServerServiceTypeOrDefault() == config.VClusterServiceTypeClusterIP
+}
+
+// connectArgs are the `vcluster connect` arguments. For a ClusterIP API server
+// the in-cluster Service DNS (`<name>.<namespace>`, which the API server
+// certificate includes as a SAN) is passed via --server so connect does not
+// fall back to a foreground port-forward.
+func (v *VCluster) connectArgs() []string {
+	args := []string{"connect", v.Resolved.ClusterName}
+	if v.apiServerIsClusterIP() {
+		server := fmt.Sprintf("https://%s.%s:443", v.Resolved.ClusterName, v.Resolved.VCluster.HostNamespace)
+		args = append(args, "--server", server)
+	}
+	return args
 }
 
 // Stop pauses the vcluster.
@@ -170,7 +202,7 @@ func (v *VCluster) Reconnect(ctx context.Context) error {
 
 // Connect runs vcluster connect and adopts the generated context.
 func (v *VCluster) Connect(ctx context.Context) error {
-	if err := v.R.Run(ctx, v.vclusterCmd("connect", v.Resolved.ClusterName)); err != nil {
+	if err := v.R.Run(ctx, v.vclusterCmd(v.connectArgs()...)); err != nil {
 		return err
 	}
 	return v.adoptContext(ctx)

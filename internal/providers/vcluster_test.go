@@ -102,6 +102,46 @@ func TestCreateArgsKeepOperationNamespaceScoped(t *testing.T) {
 	}
 }
 
+func TestCreateAndConnectArgsUseInClusterServerForClusterIP(t *testing.T) {
+	v := testVCluster("/tmp/che.yaml")
+	v.Resolved.VCluster.APIServerServiceType = config.VClusterServiceTypeClusterIP
+
+	gotCreate := v.createArgs("/tmp/values.yaml")
+	wantCreate := []string{
+		"create", "dev-alice",
+		"--values", "/tmp/values.yaml",
+		"--create-namespace=false",
+		"--connect=false",
+	}
+	if !reflect.DeepEqual(gotCreate, wantCreate) {
+		t.Fatalf("createArgs (ClusterIP) = %v, want %v", gotCreate, wantCreate)
+	}
+
+	gotConnect := v.connectArgs()
+	wantConnect := []string{
+		"connect", "dev-alice",
+		"--server", "https://dev-alice.alice-che:443",
+	}
+	if !reflect.DeepEqual(gotConnect, wantConnect) {
+		t.Fatalf("connectArgs (ClusterIP) = %v, want %v", gotConnect, wantConnect)
+	}
+}
+
+func TestCreateAndConnectArgsDefaultToLoadBalancer(t *testing.T) {
+	v := testVCluster("/tmp/che.yaml")
+
+	if got := v.createArgs("/tmp/values.yaml"); !reflect.DeepEqual(got, []string{
+		"create", "dev-alice",
+		"--values", "/tmp/values.yaml",
+		"--create-namespace=false",
+	}) {
+		t.Fatalf("createArgs (LoadBalancer) = %v", got)
+	}
+	if got := v.connectArgs(); !reflect.DeepEqual(got, []string{"connect", "dev-alice"}) {
+		t.Fatalf("connectArgs (LoadBalancer) = %v", got)
+	}
+}
+
 func TestVClusterValuesDisableSyncerClusterRole(t *testing.T) {
 	values := renderVClusterValues(&config.Resolved{
 		ClusterName:    "dev-alice",
