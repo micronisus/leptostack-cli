@@ -22,6 +22,12 @@ const (
 	ServerGitLab = "gitlab"
 )
 
+// VCluster API server Service types.
+const (
+	VClusterServiceTypeLoadBalancer = "LoadBalancer"
+	VClusterServiceTypeClusterIP    = "ClusterIP"
+)
+
 // Config is the root of the configuration document.
 type Config struct {
 	APIVersion     string              `json:"apiVersion"`
@@ -64,6 +70,9 @@ type VCluster struct {
 	// OIDC toggles vcluster API server OIDC authentication. Unset means enabled
 	// (the default).
 	OIDC *bool `json:"oidc,omitempty"`
+	// APIServerServiceType is the Kubernetes Service type of the vcluster API
+	// server: LoadBalancer or ClusterIP. Unset means LoadBalancer (the default).
+	APIServerServiceType string `json:"apiServerServiceType,omitempty"`
 }
 
 // MetricsEnabled reports whether the vcluster metrics-server integration is on.
@@ -73,6 +82,15 @@ func (v VCluster) MetricsEnabled() bool { return v.Metrics == nil || *v.Metrics 
 // OIDCEnabled reports whether vcluster API server OIDC authentication is on. An
 // unset value defaults to enabled.
 func (v VCluster) OIDCEnabled() bool { return v.OIDC == nil || *v.OIDC }
+
+// APIServerServiceTypeOrDefault returns the API server Service type. An unset
+// value defaults to LoadBalancer.
+func (v VCluster) APIServerServiceTypeOrDefault() string {
+	if v.APIServerServiceType == "" {
+		return VClusterServiceTypeLoadBalancer
+	}
+	return v.APIServerServiceType
+}
 
 // Git holds the GitOps repository configuration.
 type Git struct {

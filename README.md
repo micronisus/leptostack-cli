@@ -351,6 +351,7 @@ clusters:
       hostNamespace: alice
       # metricsServer: false   # disable the vcluster metrics-server integration
       # oidc: false            # disable vcluster API server OIDC authentication
+      # apiServerServiceType: ClusterIP   # API server Service type (default LoadBalancer)
 
 git:
   server: github            # github | gitea | gitlab
@@ -392,6 +393,12 @@ preferences:
   vcluster is created, so recreate an existing cluster
   (`leptostack delete cluster && leptostack start`) for a toggle change to take
   effect.
+- **vcluster API server Service type.** `vcluster.apiServerServiceType` sets the
+  Service type of the vcluster API server and defaults to `LoadBalancer`. Set it
+  to `ClusterIP` at `config init` with `--vcluster-api-server-service-type
+  clusterip`, or later with
+  `config set clusters.<name>.vcluster.apiServerServiceType clusterip`. Like the
+  feature toggles, the values file is applied at creation time.
 - **Config commands:** `config init` (wizard, `--non-interactive`, `--from-file`),
   `config view [--show-secrets]`, `config set <key> <value> [--secret]`,
   `config unset <key>`, `config use-context <cluster>`.

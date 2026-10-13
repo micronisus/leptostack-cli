@@ -62,6 +62,11 @@ func validateCluster(name string, cl *Cluster) error {
 		if cl.VCluster == nil || strings.TrimSpace(cl.VCluster.HostContext) == "" {
 			return &ValidationError{Path: path + ".vcluster.hostContext", Msg: "is required for the vcluster provider"}
 		}
+		switch cl.VCluster.APIServerServiceType {
+		case "", VClusterServiceTypeLoadBalancer, VClusterServiceTypeClusterIP:
+		default:
+			return &ValidationError{Path: path + ".vcluster.apiServerServiceType", Msg: "must be LoadBalancer or ClusterIP"}
+		}
 	}
 	return nil
 }

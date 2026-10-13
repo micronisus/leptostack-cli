@@ -121,6 +121,27 @@ func TestVClusterValuesOmitMetricsBlockWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestVClusterValuesAPIServerServiceType(t *testing.T) {
+	doc := renderValuesFor(t, nil, nil)
+	if got := dig(t, doc, "controlPlane", "service", "spec", "type"); got != "LoadBalancer" {
+		t.Errorf("default API server service type = %v, want LoadBalancer", got)
+	}
+
+	values := renderVClusterValues(&config.Resolved{
+		ClusterName:    "dev-alice",
+		LeptostackName: "portal",
+		Domain:         "alice-leptostack.test",
+		VCluster:       config.VCluster{APIServerServiceType: config.VClusterServiceTypeClusterIP},
+	})
+	var out map[string]any
+	if err := yaml.Unmarshal([]byte(values), &out); err != nil {
+		t.Fatalf("rendered values are not valid YAML: %v\n%s", err, values)
+	}
+	if got := dig(t, out, "controlPlane", "service", "spec", "type"); got != "ClusterIP" {
+		t.Errorf("API server service type = %v, want ClusterIP", got)
+	}
+}
+
 func TestVClusterValuesOmitOIDCArtifactsWhenDisabled(t *testing.T) {
 	off := boolp(false)
 	values := renderVClusterValues(&config.Resolved{

@@ -28,6 +28,15 @@ func TestSetConfigValueVClusterFeatures(t *testing.T) {
 	if err := setConfigValue(cfg, "clusters.dev.vcluster.oidc", "maybe", false); err == nil {
 		t.Error("expected an error for a non-boolean value")
 	}
+	if err := setConfigValue(cfg, "clusters.dev.vcluster.apiServerServiceType", "clusterip", false); err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Clusters["dev"].VCluster.APIServerServiceType; got != config.VClusterServiceTypeClusterIP {
+		t.Errorf("apiServerServiceType = %q, want ClusterIP", got)
+	}
+	if err := setConfigValue(cfg, "clusters.dev.vcluster.apiServerServiceType", "nope", false); err == nil {
+		t.Error("expected an error for an invalid service type")
+	}
 }
 
 func TestConfigInitDisablesVClusterFeatures(t *testing.T) {
@@ -40,6 +49,7 @@ func TestConfigInitDisablesVClusterFeatures(t *testing.T) {
 		"--cluster", "dev", "--cluster-name", "dev", "--domain", "alice.test",
 		"--git-server", "github", "--host-context", "che-ctx",
 		"--disable-vcluster-metrics", "--disable-vcluster-oidc",
+		"--vcluster-api-server-service-type", "clusterip",
 	)
 	if code != 0 {
 		t.Fatalf("exit code = %d (stderr=%s)", code, errOut)
@@ -49,7 +59,7 @@ func TestConfigInitDisablesVClusterFeatures(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := string(b)
-	for _, want := range []string{"metricsServer: false", "oidc: false"} {
+	for _, want := range []string{"metricsServer: false", "oidc: false", "apiServerServiceType: ClusterIP"} {
 		if !strings.Contains(cfg, want) {
 			t.Errorf("config missing %q:\n%s", want, cfg)
 		}
@@ -74,7 +84,7 @@ func TestConfigInitDefaultsVClusterFeaturesEnabled(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := string(b)
-	if strings.Contains(cfg, "metricsServer") || strings.Contains(cfg, "oidc:") {
+	if strings.Contains(cfg, "metricsServer") || strings.Contains(cfg, "oidc:") || strings.Contains(cfg, "apiServerServiceType") {
 		t.Errorf("feature toggles must be omitted when left at their defaults:\n%s", cfg)
 	}
 }

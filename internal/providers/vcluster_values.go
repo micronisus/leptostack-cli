@@ -79,7 +79,7 @@ const vclusterValuesTemplate = `controlPlane:
 {{ end }}  service:
     enabled: true
     spec:
-      type: LoadBalancer
+      type: {{ .APIServerServiceType }}
 {{ if .Metrics }}integrations:
   metricsServer:
     enabled: true
@@ -105,24 +105,26 @@ var vclusterValuesTmpl = template.Must(template.New("vcluster-values").Parse(vcl
 
 // vclusterValuesData are the inputs to the values template.
 type vclusterValuesData struct {
-	ClusterName    string
-	LeptostackName string
-	Domain         string
-	DomainRegex    string
-	OIDC           bool
-	Metrics        bool
+	ClusterName          string
+	LeptostackName       string
+	Domain               string
+	DomainRegex          string
+	OIDC                 bool
+	Metrics              bool
+	APIServerServiceType string
 }
 
 // renderVClusterValues renders the vcluster values file for a resolved cluster,
 // honoring the OIDC and metrics feature toggles.
 func renderVClusterValues(r *config.Resolved) string {
 	data := vclusterValuesData{
-		ClusterName:    r.ClusterName,
-		LeptostackName: r.LeptostackName,
-		Domain:         r.Domain,
-		DomainRegex:    strings.ReplaceAll(r.Domain, ".", `\.`),
-		OIDC:           r.VCluster.OIDCEnabled(),
-		Metrics:        r.VCluster.MetricsEnabled(),
+		ClusterName:          r.ClusterName,
+		LeptostackName:       r.LeptostackName,
+		Domain:               r.Domain,
+		DomainRegex:          strings.ReplaceAll(r.Domain, ".", `\.`),
+		OIDC:                 r.VCluster.OIDCEnabled(),
+		Metrics:              r.VCluster.MetricsEnabled(),
+		APIServerServiceType: r.VCluster.APIServerServiceTypeOrDefault(),
 	}
 	var buf strings.Builder
 	// Execute only errors when the writer fails; strings.Builder never does.

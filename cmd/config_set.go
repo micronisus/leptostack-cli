@@ -30,6 +30,18 @@ func parseConfigBool(value string) (bool, error) {
 	return false, cli.Exitf(cli.ExitUsage, "expected a boolean value (true or false), got %q", value)
 }
 
+// parseVClusterServiceType normalizes a vcluster API server Service type,
+// accepting the case-insensitive forms loadbalancer and clusterip.
+func parseVClusterServiceType(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "loadbalancer":
+		return config.VClusterServiceTypeLoadBalancer, nil
+	case "clusterip":
+		return config.VClusterServiceTypeClusterIP, nil
+	}
+	return "", cli.Exitf(cli.ExitUsage, "expected a service type (loadbalancer or clusterip), got %q", value)
+}
+
 // setConfigValue sets a dotted configuration key with enum/format validation.
 func setConfigValue(cfg *config.Config, key, value string, secret bool) error {
 	key = strings.TrimSpace(key)
@@ -133,6 +145,12 @@ func setClusterValue(cfg *config.Config, key, value string) error {
 			return err
 		}
 		ensureVCluster(cl).OIDC = &b
+	case "vcluster.apiServerServiceType":
+		t, err := parseVClusterServiceType(value)
+		if err != nil {
+			return err
+		}
+		ensureVCluster(cl).APIServerServiceType = t
 	case "minikube.cpus":
 		ensureMinikube(cl).CPUs = atoiOr(value, config.DefaultMinikubeCPUs)
 	case "minikube.memoryMB":
