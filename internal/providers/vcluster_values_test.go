@@ -80,8 +80,8 @@ func TestVClusterValuesEnableFeaturesByDefault(t *testing.T) {
 func TestVClusterValuesDisableMetricsAndOIDC(t *testing.T) {
 	off := boolp(false)
 	doc := renderValuesFor(t, off, off)
-	if got := dig(t, doc, "integrations", "metricsServer", "enabled"); got != false {
-		t.Errorf("metricsServer.enabled = %v, want false", got)
+	if _, present := doc["integrations"]; present {
+		t.Errorf("integrations block must be omitted when metrics are disabled, got %v", doc["integrations"])
 	}
 	args, ok := dig(t, doc, "controlPlane", "distro", "k8s", "apiServer", "extraArgs").([]any)
 	if !ok || len(args) != 0 {
@@ -99,6 +99,25 @@ func TestVClusterValuesDisableMetricsAndOIDC(t *testing.T) {
 	}
 	if dig(t, doc, "rbac", "clusterRole", "enabled") != false {
 		t.Error("rbac.clusterRole.enabled must remain false")
+	}
+}
+
+func TestVClusterValuesOmitMetricsBlockWhenDisabled(t *testing.T) {
+	off := boolp(false)
+	values := renderVClusterValues(&config.Resolved{
+		ClusterName:    "dev-alice",
+		LeptostackName: "portal",
+		Domain:         "alice-leptostack.test",
+		VCluster:       config.VCluster{Metrics: off},
+	})
+	for _, unwanted := range []string{"integrations", "metricsServer", "rke2-metrics-server"} {
+		if strings.Contains(values, unwanted) {
+			t.Errorf("metrics artifact %q must be absent when metrics are disabled:\n%s", unwanted, values)
+		}
+	}
+	// OIDC stays on by default and must be untouched.
+	if !strings.Contains(values, "--oidc-ca-file=/etc/oidc/ca.crt") {
+		t.Error("OIDC extraArgs must remain when only metrics are disabled")
 	}
 }
 

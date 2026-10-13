@@ -9,9 +9,9 @@ import (
 
 // vclusterValuesTemplate mirrors write_vcluster_values from the bash script with
 // two optional features: the OIDC sections (the oidc-ca volume and the API
-// server --oidc-* extra args) render only when OIDC is enabled, and the
-// metrics-server integration is toggled by metricsServer.enabled. Both default
-// to enabled.
+// server --oidc-* extra args) render only when OIDC is enabled, and the whole
+// metricsServer integration block is rendered only when metrics are enabled.
+// Both default to enabled.
 //
 // The Corefile inside overwriteConfig contains no template actions, only the
 // single braces of the Corefile DSL, so text/template can parse it verbatim.
@@ -80,9 +80,9 @@ const vclusterValuesTemplate = `controlPlane:
     enabled: true
     spec:
       type: LoadBalancer
-integrations:
+{{ if .Metrics }}integrations:
   metricsServer:
-    enabled: {{ .Metrics }}
+    enabled: true
     apiService:
       service:
         name: rke2-metrics-server
@@ -90,7 +90,7 @@ integrations:
         port: 443
     nodes: true
     pods: true
-# The host ServiceAccount is namespace-scoped (Nexus provisions a RoleBinding to
+{{ end }}# The host ServiceAccount is namespace-scoped (Nexus provisions a RoleBinding to
 # the admin ClusterRole, never cluster-scoped grants), so the vCluster must not
 # try to create its syncer ClusterRole. Node metrics stay disabled because they
 # would require that cluster-scoped access.
