@@ -64,6 +64,11 @@ spec:
       current: >-
         status.conditions.exists(e, e.type == 'Synced' && e.status == 'True') &&
         status.conditions.exists(e, e.type == 'Ready' && e.status == 'True')
+    - apiVersion: k8s.keycloak.org/v2beta1
+      kind: KeycloakRealmImport
+      current: >-
+        status.conditions.exists(e, e.type == 'Done' && e.status == 'True') &&
+        !status.conditions.exists(e, e.type == 'HasErrors' && e.status == 'True')
   postBuild:
     substituteFrom:
       - kind: ConfigMap
