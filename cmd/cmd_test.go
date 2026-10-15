@@ -306,10 +306,11 @@ func TestDisableKustomizationPatches(t *testing.T) {
 func TestConfigInitNonInteractive(t *testing.T) {
 	newEnv(t)
 	path := testutil.SetHomeConfig(t, "")
-	_, errOut, code := runCLI(t, "ghp_token\n",
+	_, errOut, code := runCLI(t, "ghp_token\nres_token\n",
 		"config", "init", "--non-interactive", "--provider", "minikube",
 		"--cluster-name", "local", "--domain", "alice.test",
-		"--repo-url", "https://github.com/acme/repo", "--git-pat-stdin",
+		"--repo-url", "https://github.com/acme/repo",
+		"--git-pat-stdin", "--base-pat-stdin",
 	)
 	if code != 0 {
 		t.Fatalf("exit code = %d (stderr=%s)", code, errOut)
@@ -318,8 +319,29 @@ func TestConfigInitNonInteractive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), "ghp_token") || !strings.Contains(string(b), "owner: acme") {
-		t.Fatalf("config not written correctly:\n%s", b)
+	for _, want := range []string{"ghp_token", "owner: acme", "res_token"} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("config missing %q:\n%s", want, b)
+		}
+	}
+}
+
+func TestConfigInitRequiresPATForConfiguredRepo(t *testing.T) {
+	newEnv(t)
+	path := testutil.SetHomeConfig(t, "")
+	_, errOut, code := runCLI(t, "",
+		"config", "init", "--non-interactive", "--provider", "minikube",
+		"--cluster-name", "local", "--domain", "alice.test",
+		"--repo-url", "https://github.com/acme/repo",
+	)
+	if code != cli.ExitUsage {
+		t.Fatalf("exit code = %d (stderr=%s), want %d", code, errOut, cli.ExitUsage)
+	}
+	if !strings.Contains(errOut, "PAT is required") {
+		t.Fatalf("expected a PAT-required error; got %q", errOut)
+	}
+	if b, _ := os.ReadFile(path); len(b) != 0 {
+		t.Fatalf("config must not be written when a PAT is missing:\n%s", b)
 	}
 }
 

@@ -258,7 +258,8 @@ func runConfigInit(cmd *cobra.Command, app *cli.App, opts *initOptions) error {
 		repoInput = config.AutoRepository
 	}
 
-	if strings.EqualFold(strings.TrimSpace(repoInput), config.AutoRepository) {
+	autoMode := strings.EqualFold(strings.TrimSpace(repoInput), config.AutoRepository)
+	if autoMode {
 		git.Repository = config.AutoRepository
 		git.Owner = ""
 		git.PAT = ""
@@ -286,26 +287,30 @@ func runConfigInit(cmd *cobra.Command, app *cli.App, opts *initOptions) error {
 	git.Branch = orString(opts.branch, orString(git.Branch, config.DefaultGitBranch))
 	git.ClusterPath = orString(opts.clusterPath, orString(git.ClusterPath, "clusters/"+cl.ClusterName))
 
-	// Secrets.
-	if opts.gitPATStdin {
-		pat, err := app.IO.ReadSecret()
+	// Secrets. When a concrete repository is configured (not auto), a PAT is
+	// required for both the GitOps repository and the leptostack-base
+	// repository. In auto mode the repository and its tokens are created on
+	// `leptostack start`, so neither is required here.
+	if !autoMode {
+		pat, err := readPAT(app, interactive, "Enter the GitOps repository PAT", opts.gitPAT, opts.gitPATStdin, config.EnvGitPAT)
 		if err != nil {
 			return err
 		}
-		git.PAT = strings.TrimSpace(pat)
-	} else if opts.gitPAT != "" {
-		git.PAT = opts.gitPAT
-	}
-	if git.PAT == "" {
-		git.PAT = envFirst(config.EnvGitPAT)
+		if pat == "" {
+			return cli.Exitf(cli.ExitUsage, "a GitOps repository PAT is required for a configured repository; provide --git-pat, --git-pat-stdin or %s", config.EnvGitPAT)
+		}
+		git.PAT = pat
 	}
 
-	if opts.basePAT {
-		pat, err := app.IO.ReadSecret()
-		if err != nil {
-			return err
-		}
-		ensureClusterBase(cl).PAT = strings.TrimSpace(pat)
+	basePAT, err := readPAT(app, interactive && !autoMode, "Enter the leptostack-base repository PAT", "", opts.basePAT, config.EnvBasePAT, config.EnvResourcesPAT)
+	if err != nil {
+		return err
+	}
+	if !autoMode && basePAT == "" {
+		return cli.Exitf(cli.ExitUsage, "a leptostack-base repository PAT is required for a configured repository; provide --base-pat-stdin or %s", config.EnvBasePAT)
+	}
+	if basePAT != "" {
+		ensureClusterBase(cl).PAT = basePAT
 	}
 
 	if opts.registryCreds != "" {
@@ -566,6 +571,31 @@ func orString(v, def string) string {
 		return def
 	}
 	return v
+}
+
+// readPAT returns a PAT sourced from stdin (when requested), the explicit flag,
+// the environment, or an interactive prompt, in that order. It returns "" when
+// no value is available and prompting is not possible.
+func readPAT(app *cli.App, interactive bool, label, flagValue string, stdin bool, envKeys ...string) (string, error) {
+	if stdin {
+		v, err := app.IO.ReadSecret()
+		if err != nil {
+			return "", err
+		}
+		if v = strings.TrimSpace(v); v != "" {
+			return v, nil
+		}
+	}
+	if flagValue != "" {
+		return flagValue, nil
+	}
+	if v := envFirst(envKeys...); v != "" {
+		return v, nil
+	}
+	if interactive {
+		return app.PromptSecret(label)
+	}
+	return "", nil
 }
 
 func envFirst(keys ...string) string {

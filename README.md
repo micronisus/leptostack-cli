@@ -255,10 +255,20 @@ repository is created and the config is updated with the real values:
 5. writes the owner, repository and tokens into the config (`git.pat`,
    `base.pat`) and continues with the template sync and Flux bootstrap.
 
-To use an existing repository instead, pass its URL and skip the automation:
+To use an existing repository instead, pass its URL and skip the automation. A
+PAT is then required for **both** the GitOps repository and the private
+**leptostack-base** repository, so `config init` prompts for two separate PATs.
+Non-interactively, supply them via `--git-pat-stdin`/`--git-pat` (or
+`LEPTOSTACK_GIT_PAT`) and `--base-pat-stdin` (or `LEPTOSTACK_BASE_PAT`); the
+command fails if either is missing.
 
 ```bash
 leptostack config init --repo-url https://github.com/me/my-gitops
+# prompts "Enter the GitOps repository PAT" then "Enter the leptostack-base repository PAT"
+
+printf 'ghp_gitops_token\nghp_base_token\n' \
+  | leptostack config init --repo-url https://github.com/me/my-gitops \
+      --git-pat-stdin --base-pat-stdin
 ```
 
 Token minting is capability-aware, because the hosts differ:

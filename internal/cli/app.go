@@ -140,6 +140,20 @@ func (a *App) Prompt(label, def string) (string, error) {
 	return line, nil
 }
 
+// PromptSecret reads a secret value without echoing, applying no default. In
+// non-interactive mode a missing value is an error.
+func (a *App) PromptSecret(label string) (string, error) {
+	if !a.Interactive() {
+		return "", Exitf(ExitUsage, "missing required value %q; provide it via a flag, stdin or the environment", label)
+	}
+	a.IO.Printf("%s: ", label)
+	v, err := a.IO.ReadSecret()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(v), nil
+}
+
 // Timeout returns the effective timeout for a command given its default.
 func (a *App) Timeout(def time.Duration) time.Duration {
 	if a.Flags.Timeout > 0 {
