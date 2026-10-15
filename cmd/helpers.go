@@ -46,6 +46,20 @@ func resolve(app *cli.App) (*config.Resolved, error) {
 	return r, nil
 }
 
+// resolveNamed resolves an explicitly named cluster, ignoring the selected
+// cluster, and maps errors to the configuration exit code.
+func resolveNamed(app *cli.App, name string) (*config.Resolved, error) {
+	cfg, err := app.Config()
+	if err != nil {
+		return nil, err
+	}
+	r, err := cfg.Resolve(name)
+	if err != nil {
+		return nil, cli.MapConfigError(err)
+	}
+	return r, nil
+}
+
 // requireReachable fails with exit code 6 when the cluster API is unreachable.
 func requireReachable(ctx context.Context, app *cli.App, kube *kubernetes.Client) error {
 	if kube.Healthz(ctx) {

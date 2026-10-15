@@ -28,15 +28,13 @@ const (
 	VClusterServiceTypeClusterIP    = "ClusterIP"
 )
 
-// Config is the root of the configuration document.
+// Config is the root of the configuration document. Git, Registry and Base are
+// cluster-scoped: there are no global sections.
 type Config struct {
 	APIVersion     string              `json:"apiVersion"`
 	Kind           string              `json:"kind"`
 	CurrentContext string              `json:"current-context,omitempty"`
 	Clusters       map[string]*Cluster `json:"clusters,omitempty"`
-	Git            *Git                `json:"git,omitempty"`
-	Registry       *Registry           `json:"registry,omitempty"`
-	Base           *Base               `json:"base,omitempty"`
 	Preferences    *Preferences        `json:"preferences,omitempty"`
 }
 
@@ -156,27 +154,12 @@ func (c *Config) Clone() *Config {
 			out.Clusters[k] = v.clone()
 		}
 	}
-	if c.Git != nil {
-		g := *c.Git
-		out.Git = &g
-	}
-	if c.Registry != nil {
-		r := *c.Registry
-		out.Registry = &r
-	}
-	if c.Base != nil {
-		b := *c.Base
-		out.Base = &b
-	}
 	if c.Preferences != nil {
 		p := *c.Preferences
 		out.Preferences = &p
 	}
 	return &out
 }
-
-// Clone returns a deep copy of the cluster entry.
-func (cl *Cluster) Clone() *Cluster { return cl.clone() }
 
 func (cl *Cluster) clone() *Cluster {
 	if cl == nil {

@@ -295,11 +295,14 @@ func newDeleteCmd(app *cli.App) *cobra.Command {
 func newDeleteClusterCmd(app *cli.App) *cobra.Command {
 	var force bool
 	c := &cobra.Command{
-		Use:   "cluster",
-		Short: "Delete the cluster",
-		Args:  cobra.NoArgs,
+		Use:   "cluster <name>",
+		Short: "Delete the named cluster",
+		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			r, err := resolve(app)
+			if app.Flags.Cluster != "" {
+				return cli.Exitf(cli.ExitUsage, "-c/--cluster is not applicable to 'delete cluster'; pass the cluster name as an argument")
+			}
+			r, err := resolveNamed(app, args[0])
 			if err != nil {
 				return err
 			}

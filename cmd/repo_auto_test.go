@@ -21,12 +21,12 @@ clusters:
     minikube:
       cpus: 8
       memoryMB: 24576
-git:
-  server: github
-  hostname: github.com
-  branch: main
-  clusterPath: clusters/{cluster}
-  repository: auto
+    git:
+      server: github
+      hostname: github.com
+      branch: main
+      clusterPath: clusters/{cluster}
+      repository: auto
 `
 
 const ghAutoShim = `echo "gh $*" >> "$FAKE_LOG"
@@ -37,25 +37,6 @@ case "$*" in
   "api --method POST user/repos"*) echo '{"full_name":"alice/local-gitops","clone_url":"https://github.com/alice/local-gitops.git"}' ;;
 esac
 exit 0
-`
-
-const mismatchedClusterConfig = `apiVersion: v1
-kind: LeptostackConfig
-current-context: local
-clusters:
-  local:
-    provider: minikube
-    clusterName: foo
-    leptostackName: portal
-    domain: alice.test
-    minikube:
-      cpus: 8
-      memoryMB: 24576
-git:
-  server: github
-  repository: auto
-  branch: main
-  clusterPath: clusters/foo
 `
 
 func TestConfigInitUsesClusterNameAsKey(t *testing.T) {
@@ -87,37 +68,13 @@ func TestConfigInitUsesClusterNameAsKey(t *testing.T) {
 	}
 }
 
-func TestConfigInitRenamesMismatchedKeyToClusterName(t *testing.T) {
-	newEnv(t)
-	cfgPath := testutil.SetHomeConfig(t, mismatchedClusterConfig)
-
-	_, errOut, code := runCLI(t, "",
-		"config", "init", "--non-interactive", "--provider", "minikube",
-		"--domain", "alice.test", "--git-server", "github",
-	)
-	if code != 0 {
-		t.Fatalf("exit code = %d (stderr=%s)", code, errOut)
-	}
-	b, err := os.ReadFile(cfgPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg := string(b)
-	if strings.Contains(cfg, "  local:") {
-		t.Fatalf("mismatched key was not renamed to the cluster name:\n%s", cfg)
-	}
-	if !strings.Contains(cfg, "  foo:") {
-		t.Fatalf("expected the cluster to be keyed as foo:\n%s", cfg)
-	}
-}
-
 func TestConfigInitDefaultsToAutoRepository(t *testing.T) {
 	newEnv(t)
 	cfgPath := testutil.SetHomeConfig(t, "")
 
 	_, errOut, code := runCLI(t, "",
 		"config", "init", "--non-interactive", "--provider", "minikube",
-		"--cluster", "local", "--domain", "alice.test", "--git-server", "github",
+		"--cluster-name", "local", "--domain", "alice.test", "--git-server", "github",
 	)
 	if code != 0 {
 		t.Fatalf("exit code = %d (stderr=%s)", code, errOut)
@@ -128,6 +85,45 @@ func TestConfigInitDefaultsToAutoRepository(t *testing.T) {
 	}
 	if !strings.Contains(string(b), "repository: auto") {
 		t.Fatalf("expected repository: auto in config:\n%s", b)
+	}
+}
+
+func TestConfigInitRejectsExistingClusterName(t *testing.T) {
+	newEnv(t)
+	cfgPath := testutil.SetHomeConfig(t, testConfig) // already has cluster "local"
+
+	_, errOut, code := runCLI(t, "",
+		"config", "init", "--non-interactive", "--provider", "minikube",
+		"--cluster-name", "local", "--domain", "alice.test", "--git-server", "github",
+	)
+	if code == 0 {
+		t.Fatalf("expected a non-zero exit for a duplicate cluster name (stderr=%s)", errOut)
+	}
+	if !strings.Contains(errOut, "already exists") {
+		t.Fatalf("expected an 'already exists' error; got %q", errOut)
+	}
+	b, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(b), "clusterName: local") != 1 {
+		t.Fatalf("config must be unchanged on rejection:\n%s", b)
+	}
+}
+
+func TestConfigInitRejectsClusterFlag(t *testing.T) {
+	newEnv(t)
+	testutil.SetHomeConfig(t, "")
+
+	_, errOut, code := runCLI(t, "",
+		"config", "init", "--non-interactive", "--provider", "minikube",
+		"-c", "other", "--cluster-name", "local", "--domain", "alice.test", "--git-server", "github",
+	)
+	if code == 0 {
+		t.Fatalf("expected a non-zero exit when -c is given (stderr=%s)", errOut)
+	}
+	if !strings.Contains(errOut, "not applicable") {
+		t.Fatalf("expected a 'not applicable' error; got %q", errOut)
 	}
 }
 

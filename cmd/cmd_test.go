@@ -26,20 +26,20 @@ clusters:
     minikube:
       cpus: 8
       memoryMB: 24576
-git:
-  server: github
-  hostname: github.com
-  owner: micronisus
-  repository: leptostack-fluxcd
-  branch: main
-  clusterPath: clusters/{cluster}
-  pat: ghp_x
-registry:
-  repository: ghcr.io
-  credentials: u:p
-base:
-  url: https://github.com/leptostack-fluxcd/leptostack-base.git
-  branch: main
+    git:
+      server: github
+      hostname: github.com
+      owner: micronisus
+      repository: leptostack-fluxcd
+      branch: main
+      clusterPath: clusters/{cluster}
+      pat: ghp_x
+    registry:
+      repository: ghcr.io
+      credentials: u:p
+    base:
+      url: https://github.com/leptostack-fluxcd/leptostack-base.git
+      branch: main
 `
 
 const kustomizationsJSON = `{"items":[
@@ -308,7 +308,7 @@ func TestConfigInitNonInteractive(t *testing.T) {
 	path := testutil.SetHomeConfig(t, "")
 	_, errOut, code := runCLI(t, "ghp_token\n",
 		"config", "init", "--non-interactive", "--provider", "minikube",
-		"--cluster", "local", "--domain", "alice.test",
+		"--cluster-name", "local", "--domain", "alice.test",
 		"--repo-url", "https://github.com/acme/repo", "--git-pat-stdin",
 	)
 	if code != 0 {

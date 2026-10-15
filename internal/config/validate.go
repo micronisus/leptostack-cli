@@ -32,13 +32,6 @@ func (c *Config) Validate() error {
 			return err
 		}
 	}
-	if c.Git != nil && c.Git.Server != "" {
-		switch c.Git.Server {
-		case ServerGitHub, ServerGitea, ServerGitLab:
-		default:
-			return &ValidationError{Path: "git.server", Msg: "must be github, gitea or gitlab"}
-		}
-	}
 	return nil
 }
 
@@ -66,6 +59,13 @@ func validateCluster(name string, cl *Cluster) error {
 		case "", VClusterServiceTypeLoadBalancer, VClusterServiceTypeClusterIP:
 		default:
 			return &ValidationError{Path: path + ".vcluster.apiServerServiceType", Msg: "must be LoadBalancer or ClusterIP"}
+		}
+	}
+	if cl.Git != nil && cl.Git.Server != "" {
+		switch cl.Git.Server {
+		case ServerGitHub, ServerGitea, ServerGitLab:
+		default:
+			return &ValidationError{Path: path + ".git.server", Msg: "must be github, gitea or gitlab"}
 		}
 	}
 	return nil

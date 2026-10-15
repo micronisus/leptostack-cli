@@ -14,7 +14,6 @@ import (
 )
 
 type initOptions struct {
-	cluster              string
 	provider             string
 	clusterName          string
 	leptostackName       string
@@ -63,17 +62,19 @@ func newConfigInitCmd(app *cli.App) *cobra.Command {
 	opts := &initOptions{}
 	c := &cobra.Command{
 		Use:   "init",
-		Short: "Configure a cluster (adds or updates a named cluster)",
+		Short: "Add a new cluster to the configuration",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if opts.nonInteractive {
 				app.Flags.NonInteractive = true
 			}
+			if app.Flags.Cluster != "" {
+				return cli.Exitf(cli.ExitUsage, "-c/--cluster is not applicable to 'config init'; it always creates a new cluster")
+			}
 			return runConfigInit(cmd, app, opts)
 		},
 	}
 	f := c.Flags()
-	f.StringVar(&opts.cluster, "cluster", "", "Named cluster to add or update (default: current-context)")
 	f.StringVar(&opts.provider, "provider", "", "Cluster provider: minikube or vcluster")
 	f.StringVar(&opts.clusterName, "cluster-name", "", "Cluster name")
 	f.StringVar(&opts.leptostackName, "leptostack-name", "", "LeptoStack name")
@@ -125,30 +126,9 @@ func runConfigInit(cmd *cobra.Command, app *cli.App, opts *initOptions) error {
 		return err
 	}
 
-	// Determine which cluster entry to update. Without --cluster we update the
-	// current cluster when it exists; otherwise we are adding a cluster whose
-	// entry key becomes its name (decided once the name is known).
-	clusterKey := opts.cluster
-	var existing *config.Cluster
-	if clusterKey != "" {
-		existing = cfg.Clusters[clusterKey]
-	} else if len(cfg.Clusters) > 0 {
-		if e, ok := cfg.Clusters[cfg.CurrentClusterName()]; ok {
-			clusterKey = cfg.CurrentClusterName()
-			existing = e
-		}
-	}
-
-	cl := &config.Cluster{}
-	if existing != nil {
-		cl = existing.Clone()
-	}
-	if cl.Provider == "" {
-		cl.Provider = orString(opts.provider, config.DefaultProvider)
-	}
-	if opts.provider != "" {
-		cl.Provider = opts.provider
-	}
+	// config init always adds a new cluster; existing clusters are never
+	// updated, so the provided name must be unique.
+	cl := &config.Cluster{Provider: orString(opts.provider, config.DefaultProvider)}
 
 	if err := validateProvider(cl.Provider); err != nil {
 		return err
@@ -175,22 +155,12 @@ func runConfigInit(cmd *cobra.Command, app *cli.App, opts *initOptions) error {
 		}
 	}
 
-	// Cluster name. It defaults to the entry key (or "local" for a new
-	// cluster) and becomes the entry key itself.
-	cl.ClusterName = orString(opts.clusterName, cl.ClusterName)
-	if cl.ClusterName == "" {
-		cl.ClusterName = orString(clusterKey, config.DefaultClusterName)
+	// Cluster name: it becomes the entry key and must not already exist.
+	name, err := promptNewClusterName(cfg, app, opts.clusterName, interactive)
+	if err != nil {
+		return err
 	}
-	if interactive && opts.clusterName == "" {
-		v, err := app.Prompt("Enter the cluster name", cl.ClusterName)
-		if err != nil {
-			return err
-		}
-		cl.ClusterName = v
-	}
-	if err := config.ValidateClusterName(cl.ClusterName); err != nil {
-		return cli.MapConfigError(err)
-	}
+	cl.ClusterName = name
 
 	// LeptoStack name.
 	cl.LeptostackName = orString(opts.leptostackName, orString(cl.LeptostackName, config.DefaultLeptostackName))
@@ -273,12 +243,8 @@ func runConfigInit(cmd *cobra.Command, app *cli.App, opts *initOptions) error {
 	}
 
 	// Git repository. The default is "auto": the repository and its Flux tokens
-	// are created on `leptostack start`.
-	git := cfg.Git
-	if git == nil {
-		git = &config.Git{}
-		cfg.Git = git
-	}
+	// are created on `leptostack start`. Git is cluster-scoped.
+	git := ensureClusterGit(cl)
 
 	repoInput := opts.repoURL
 	if repoInput == "" && interactive && git.Repository == "" {
@@ -339,49 +305,40 @@ func runConfigInit(cmd *cobra.Command, app *cli.App, opts *initOptions) error {
 		if err != nil {
 			return err
 		}
-		ensureBase(cfg).PAT = strings.TrimSpace(pat)
+		ensureClusterBase(cl).PAT = strings.TrimSpace(pat)
 	}
 
 	if opts.registryCreds != "" {
-		cfg.SetRegistryCredentials(opts.registryCreds)
+		ensureClusterRegistry(cl).Credentials = opts.registryCreds
 	} else if opts.registryStdin {
 		creds, err := app.IO.ReadSecret()
 		if err != nil {
 			return err
 		}
-		cfg.SetRegistryCredentials(strings.TrimSpace(creds))
+		ensureClusterRegistry(cl).Credentials = strings.TrimSpace(creds)
 	}
-	if r := cfg.Registry; r != nil && r.Credentials != "" && !strings.Contains(r.Credentials, ":") {
+	if r := cl.Registry; r != nil && r.Credentials != "" && !strings.Contains(r.Credentials, ":") {
 		return cli.Exitf(cli.ExitUsage, "registry credentials must be in user:pass format")
 	}
 
-	base := ensureBase(cfg)
-	if opts.baseURL != "" {
-		base.URL = opts.baseURL
-	}
-	if opts.baseBranch != "" {
-		base.Branch = opts.baseBranch
-	}
-	if opts.registryRepo != "" {
-		ensureRegistry(cfg).Repository = opts.registryRepo
-	}
-
-	// Save. Keep the entry key in sync with the cluster name so the displayed
-	// name, `-c/--cluster`, and the derived context agree.
-	if clusterKey == "" {
-		clusterKey = cl.ClusterName
-	} else if opts.cluster == "" && clusterKey != cl.ClusterName {
-		if _, taken := cfg.Clusters[cl.ClusterName]; !taken {
-			delete(cfg.Clusters, clusterKey)
-			if cfg.CurrentContext == clusterKey || cfg.CurrentContext == "" {
-				cfg.CurrentContext = cl.ClusterName
-			}
-			clusterKey = cl.ClusterName
+	if opts.baseURL != "" || opts.baseBranch != "" {
+		b := ensureClusterBase(cl)
+		if opts.baseURL != "" {
+			b.URL = opts.baseURL
+		}
+		if opts.baseBranch != "" {
+			b.Branch = opts.baseBranch
 		}
 	}
-	cfg.Clusters[clusterKey] = cl
+	if opts.registryRepo != "" {
+		ensureClusterRegistry(cl).Repository = opts.registryRepo
+	}
+
+	// The entry key is the cluster name, matching `-c/--cluster` and the
+	// derived context.
+	cfg.Clusters[cl.ClusterName] = cl
 	if cfg.CurrentContext == "" {
-		cfg.CurrentContext = clusterKey
+		cfg.CurrentContext = cl.ClusterName
 	}
 	if err := cfg.Save(); err != nil {
 		return cli.MapConfigError(err)
@@ -395,7 +352,51 @@ func runConfigInit(cmd *cobra.Command, app *cli.App, opts *initOptions) error {
 		}
 	}
 
-	app.IO.Errf("Configuration saved to %s\n\nTo start the development environment, run:\n  leptostack start -c %s\n", config.DefaultPath(), clusterKey)
+	app.IO.Errf("Configuration saved to %s\n\nTo start the development environment, run:\n  leptostack start -c %s\n", config.DefaultPath(), cl.ClusterName)
+	return nil
+}
+
+// promptNewClusterName resolves the name of the cluster to create. The name must
+// be valid and not already configured; interactively it keeps prompting until a
+// free name is supplied.
+func promptNewClusterName(cfg *config.Config, app *cli.App, provided string, interactive bool) (string, error) {
+	name := strings.TrimSpace(provided)
+	if name == "" {
+		name = config.DefaultClusterName
+		if interactive {
+			v, err := app.Prompt("Enter the cluster name", name)
+			if err != nil {
+				return "", err
+			}
+			name = orString(v, name)
+		}
+	}
+	for {
+		switch err := clusterNameProblem(cfg, name); {
+		case err == nil:
+			return name, nil
+		case !interactive:
+			return "", err
+		default:
+			app.IO.Errf("%v\n", err)
+		}
+		v, err := app.Prompt("Enter the cluster name", "")
+		if err != nil {
+			return "", err
+		}
+		name = orString(v, config.DefaultClusterName)
+	}
+}
+
+// clusterNameProblem reports why name cannot be used for a new cluster, or nil
+// when it is valid and free.
+func clusterNameProblem(cfg *config.Config, name string) error {
+	if err := config.ValidateClusterName(name); err != nil {
+		return cli.MapConfigError(err)
+	}
+	if cfg.Clusters[name] != nil {
+		return cli.Exitf(cli.ExitConfig, "cluster %q already exists; choose a different name", name)
+	}
 	return nil
 }
 
@@ -432,7 +433,7 @@ func newConfigSetCmd(app *cli.App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := setConfigValue(cfg, args[0], args[1], secret); err != nil {
+			if err := setConfigValueIn(cfg, app.Flags.Cluster, args[0], args[1], secret); err != nil {
 				return err
 			}
 			if err := cfg.Save(); err != nil {
@@ -455,7 +456,7 @@ func newConfigUnsetCmd(app *cli.App) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := unsetConfigValue(cfg, args[0]); err != nil {
+			if err := unsetConfigValueIn(cfg, app.Flags.Cluster, args[0]); err != nil {
 				return err
 			}
 			if err := cfg.Save(); err != nil {
@@ -520,9 +521,6 @@ func loadOrNew(app *cli.App) (*config.Config, error) {
 				APIVersion: config.APIVersion,
 				Kind:       config.Kind,
 				Clusters:   map[string]*config.Cluster{},
-				Git:        &config.Git{},
-				Registry:   &config.Registry{},
-				Base:       &config.Base{},
 			}, nil
 		}
 		return nil, err
@@ -531,20 +529,6 @@ func loadOrNew(app *cli.App) (*config.Config, error) {
 		cfg.Clusters = map[string]*config.Cluster{}
 	}
 	return cfg, nil
-}
-
-func ensureBase(cfg *config.Config) *config.Base {
-	if cfg.Base == nil {
-		cfg.Base = &config.Base{}
-	}
-	return cfg.Base
-}
-
-func ensureRegistry(cfg *config.Config) *config.Registry {
-	if cfg.Registry == nil {
-		cfg.Registry = &config.Registry{}
-	}
-	return cfg.Registry
 }
 
 func validateProvider(p string) error {

@@ -50,9 +50,14 @@ func (c *Config) Resolve(name string) (*Resolved, error) {
 		r.VCluster.HostNamespace = DefaultHostNamespace()
 	}
 
-	// Git: global then per-cluster override, then env.
-	r.Git = mergeGit(c.Git, cl.Git)
+	// Git: per-cluster, then env.
+	if cl.Git != nil {
+		r.Git = *cl.Git
+	}
 	applyGitEnv(&r.Git)
+	if r.Git.Server == "" {
+		r.Git.Server = DefaultGitServer
+	}
 	if r.Git.Branch == "" {
 		r.Git.Branch = DefaultGitBranch
 	}
@@ -61,7 +66,9 @@ func (c *Config) Resolve(name string) (*Resolved, error) {
 	}
 
 	// Registry.
-	r.Registry = mergeRegistry(c.Registry, cl.Registry)
+	if cl.Registry != nil {
+		r.Registry = *cl.Registry
+	}
 	if r.Registry.Repository == "" {
 		r.Registry.Repository = DefaultRegistryRepo
 	}
@@ -70,7 +77,9 @@ func (c *Config) Resolve(name string) (*Resolved, error) {
 	}
 
 	// Base.
-	r.Base = mergeBase(c.Base, cl.Base)
+	if cl.Base != nil {
+		r.Base = *cl.Base
+	}
 	if v := os.Getenv(EnvBaseURL); v != "" {
 		r.Base.URL = v
 	}
@@ -107,42 +116,6 @@ func deriveContext(r *Resolved, cachedVClusterContext string) string {
 	return "leptostack-" + r.ClusterName
 }
 
-func mergeGit(global, override *Git) Git {
-	var out Git
-	if global != nil {
-		out = *global
-	}
-	if override != nil {
-		out = overlayGit(out, *override)
-	}
-	return out
-}
-
-func overlayGit(base, o Git) Git {
-	if o.Server != "" {
-		base.Server = o.Server
-	}
-	if o.Hostname != "" {
-		base.Hostname = o.Hostname
-	}
-	if o.Owner != "" {
-		base.Owner = o.Owner
-	}
-	if o.Repository != "" {
-		base.Repository = o.Repository
-	}
-	if o.Branch != "" {
-		base.Branch = o.Branch
-	}
-	if o.ClusterPath != "" {
-		base.ClusterPath = o.ClusterPath
-	}
-	if o.PAT != "" {
-		base.PAT = o.PAT
-	}
-	return base
-}
-
 func applyGitEnv(g *Git) {
 	if v := os.Getenv(EnvGitServer); v != "" {
 		g.Server = v
@@ -165,41 +138,6 @@ func applyGitEnv(g *Git) {
 	if v := os.Getenv(EnvGitPAT); v != "" {
 		g.PAT = v
 	}
-}
-
-func mergeRegistry(global, override *Registry) Registry {
-	var out Registry
-	if global != nil {
-		out = *global
-	}
-	if override != nil {
-		if override.Repository != "" {
-			out.Repository = override.Repository
-		}
-		if override.Credentials != "" {
-			out.Credentials = override.Credentials
-		}
-	}
-	return out
-}
-
-func mergeBase(global, override *Base) Base {
-	var out Base
-	if global != nil {
-		out = *global
-	}
-	if override != nil {
-		if override.URL != "" {
-			out.URL = override.URL
-		}
-		if override.Branch != "" {
-			out.Branch = override.Branch
-		}
-		if override.PAT != "" {
-			out.PAT = override.PAT
-		}
-	}
-	return out
 }
 
 // ClonePath expands the {cluster} placeholder in clusterPath.

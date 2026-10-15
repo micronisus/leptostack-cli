@@ -104,11 +104,10 @@ func newRegistrySetCmd(app *cli.App) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				if cfg.Registry == nil {
-					cfg.Registry = &config.Registry{}
-				}
-				cfg.Registry.Repository = repository
-				cfg.Registry.Credentials = creds
+				cl := getOrCreateCluster(cfg, r.Name, r.ClusterName, r.Provider)
+				reg := ensureClusterRegistry(cl)
+				reg.Repository = repository
+				reg.Credentials = creds
 				if err := cfg.Save(); err != nil {
 					return cli.MapConfigError(err)
 				}

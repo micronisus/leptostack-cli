@@ -103,30 +103,78 @@ func stripDeprecatedFields(b []byte) ([]byte, error) {
 		return b, nil
 	}
 	changed := false
+	clusters, _ := raw["clusters"].(map[string]any)
+
+	// A legacy global template block becomes a global base first.
 	if migrateTemplateBlock(raw) {
 		changed = true
 	}
-	if clusters, ok := raw["clusters"].(map[string]any); ok {
-		for _, entry := range clusters {
-			cluster, ok := entry.(map[string]any)
-			if !ok {
-				continue
-			}
-			if migrateTemplateBlock(cluster) {
+
+	// Migrate each cluster's deprecated fields before folding the global
+	// sections, so a per-cluster template.pat wins over a former global one.
+	for _, entry := range clusters {
+		cluster, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		if migrateTemplateBlock(cluster) {
+			changed = true
+		}
+		if vc, ok := cluster["vcluster"].(map[string]any); ok {
+			if _, present := vc["dnsTargetIP"]; present {
+				delete(vc, "dnsTargetIP")
 				changed = true
 			}
-			if vc, ok := cluster["vcluster"].(map[string]any); ok {
-				if _, present := vc["dnsTargetIP"]; present {
-					delete(vc, "dnsTargetIP")
-					changed = true
-				}
-			}
 		}
+	}
+
+	// The removed global git/registry/base sections are folded into each
+	// cluster (cluster values win) and deleted. Existing files therefore keep
+	// resolving to the same values now that the sections are per-cluster only.
+	for _, section := range []string{"git", "registry", "base"} {
+		global, ok := raw[section].(map[string]any)
+		if !ok {
+			continue
+		}
+		if !foldGlobalSection(clusters, section, global) {
+			return nil, fmt.Errorf("config has a top-level %q section but no cluster to migrate it into", section)
+		}
+		delete(raw, section)
+		changed = true
 	}
 	if !changed {
 		return b, nil
 	}
 	return yaml.Marshal(raw)
+}
+
+// foldGlobalSection copies a deprecated global section's fields into every
+// cluster's section when the cluster does not already set them, so a formerly
+// global value keeps applying to each cluster that did not override it. It
+// reports whether at least one cluster received the section.
+func foldGlobalSection(clusters map[string]any, section string, global map[string]any) bool {
+	if len(global) == 0 || len(clusters) == 0 {
+		return false
+	}
+	folded := false
+	for _, entry := range clusters {
+		cluster, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		cur, _ := cluster[section].(map[string]any)
+		if cur == nil {
+			cur = map[string]any{}
+		}
+		for k, v := range global {
+			if _, set := cur[k]; !set {
+				cur[k] = v
+			}
+		}
+		cluster[section] = cur
+		folded = true
+	}
+	return folded
 }
 
 // migrateTemplateBlock moves a deprecated template block's pat into base.pat
@@ -220,30 +268,17 @@ func (c *Config) ApplyDefaults() {
 				cl.Minikube.MemoryMB = DefaultMinikubeMemory
 			}
 		}
-	}
-	if c.Git == nil {
-		c.Git = &Git{}
-	}
-	if c.Git.Branch == "" {
-		c.Git.Branch = DefaultGitBranch
-	}
-	if c.Git.Server == "" {
-		c.Git.Server = DefaultGitServer
-	}
-	if c.Registry == nil {
-		c.Registry = &Registry{}
-	}
-	if c.Registry.Repository == "" {
-		c.Registry.Repository = DefaultRegistryRepo
-	}
-	if c.Base == nil {
-		c.Base = &Base{}
-	}
-	if c.Base.URL == "" {
-		c.Base.URL = DefaultBaseURL
-	}
-	if c.Base.Branch == "" {
-		c.Base.Branch = DefaultBaseBranch
+		// Clear sections left empty by `unset` or partial edits, so the file
+		// does not accumulate `section: {}` blocks.
+		if cl.Git != nil && *cl.Git == (Git{}) {
+			cl.Git = nil
+		}
+		if cl.Registry != nil && *cl.Registry == (Registry{}) {
+			cl.Registry = nil
+		}
+		if cl.Base != nil && *cl.Base == (Base{}) {
+			cl.Base = nil
+		}
 	}
 }
 

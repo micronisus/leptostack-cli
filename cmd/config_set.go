@@ -42,47 +42,76 @@ func parseVClusterServiceType(value string) (string, error) {
 	return "", cli.Exitf(cli.ExitUsage, "expected a service type (loadbalancer or clusterip), got %q", value)
 }
 
-// setConfigValue sets a dotted configuration key with enum/format validation.
-func setConfigValue(cfg *config.Config, key, value string, secret bool) error {
+// scopedSections are the cluster sections that may also be written with their
+// short, unqualified key (for example `base.pat`), targeting the selected
+// cluster. They are cluster-scoped only; there are no global sections.
+var scopedSections = []string{"git.", "registry.", "base."}
+
+// isScopedSectionKey reports whether key addresses a cluster-scoped section.
+func isScopedSectionKey(key string) bool {
+	for _, prefix := range scopedSections {
+		if strings.HasPrefix(key, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveScopeTarget returns the cluster a short (unqualified) shared-section
+// key should target: the explicitly selected cluster, otherwise the current
+// cluster. It returns "" with no error when the key needs no scoping, and fails
+// when no existing cluster can be unambiguously selected.
+func resolveScopeTarget(cfg *config.Config, cluster, key string) (string, error) {
+	if strings.HasPrefix(key, "clusters.") || !isScopedSectionKey(key) {
+		return "", nil
+	}
+	if cluster != "" {
+		if _, ok := cfg.Clusters[cluster]; !ok {
+			return "", cli.Exitf(cli.ExitUsage, "unknown cluster %q", cluster)
+		}
+		return cluster, nil
+	}
+	if cfg.CurrentContext != "" {
+		if _, ok := cfg.Clusters[cfg.CurrentContext]; !ok {
+			return "", cli.Exitf(cli.ExitUsage, "current-context cluster %q does not exist", cfg.CurrentContext)
+		}
+		return cfg.CurrentContext, nil
+	}
+	if len(cfg.Clusters) == 1 {
+		for name := range cfg.Clusters {
+			return name, nil
+		}
+	}
+	return "", cli.Exitf(cli.ExitUsage, "no cluster selected; use -c/--cluster or 'config use-context'")
+}
+
+// scopeKey rewrites a short shared-section key (git.*, registry.*, base.*) so it
+// targets the given cluster. Keys that already name a cluster, or that are not
+// cluster-scoped, are returned unchanged.
+func scopeKey(cluster, key string) string {
+	if cluster == "" || strings.HasPrefix(key, "clusters.") || !isScopedSectionKey(key) {
+		return key
+	}
+	return "clusters." + cluster + "." + key
+}
+
+// setConfigValueIn sets a dotted configuration key. When cluster is empty the
+// current cluster is used; the shared sections are always cluster-scoped.
+func setConfigValueIn(cfg *config.Config, cluster, key, value string, secret bool) error {
 	key = strings.TrimSpace(key)
 	lower := strings.ToLower(value)
 	if !secret && looksSecret(key, lower) {
 		return cli.Exitf(cli.ExitUsage, "refusing to set %q to a secret-looking value without --secret", key)
 	}
+	target, err := resolveScopeTarget(cfg, cluster, key)
+	if err != nil {
+		return err
+	}
+	key = scopeKey(target, key)
 
 	switch key {
 	case "current-context":
 		return setCurrentContext(cfg, value)
-	case "git.server":
-		if err := validateGitServer(value); err != nil {
-			return err
-		}
-		ensureGit(cfg).Server = value
-	case "git.hostname":
-		ensureGit(cfg).Hostname = value
-	case "git.owner":
-		ensureGit(cfg).Owner = value
-	case "git.repository":
-		ensureGit(cfg).Repository = value
-	case "git.branch":
-		ensureGit(cfg).Branch = value
-	case "git.clusterPath":
-		ensureGit(cfg).ClusterPath = value
-	case "git.pat":
-		ensureGit(cfg).PAT = value
-	case "registry.repository":
-		ensureRegistry(cfg).Repository = value
-	case "registry.credentials":
-		if !strings.Contains(value, ":") {
-			return cli.Exitf(cli.ExitUsage, "registry credentials must be in user:pass format")
-		}
-		ensureRegistry(cfg).Credentials = value
-	case "base.url":
-		ensureBase(cfg).URL = value
-	case "base.branch":
-		ensureBase(cfg).Branch = value
-	case "base.pat":
-		ensureBase(cfg).PAT = value
 	case "preferences.autoUpgradeCheck":
 		b := value == "true"
 		if cfg.Preferences == nil {
@@ -106,11 +135,7 @@ func setClusterValue(cfg *config.Config, key, value string) error {
 	}
 	name := rest[:dot]
 	field := rest[dot+1:]
-	cl, ok := cfg.Clusters[name]
-	if !ok {
-		cl = &config.Cluster{ClusterName: name}
-		cfg.Clusters[name] = cl
-	}
+	cl := getOrCreateCluster(cfg, name, "", "")
 	switch field {
 	case "provider":
 		if err := validateProvider(value); err != nil {
@@ -155,27 +180,87 @@ func setClusterValue(cfg *config.Config, key, value string) error {
 		ensureMinikube(cl).CPUs = atoiOr(value, config.DefaultMinikubeCPUs)
 	case "minikube.memoryMB":
 		ensureMinikube(cl).MemoryMB = atoiOr(value, config.DefaultMinikubeMemory)
+	case "git.server":
+		if err := validateGitServer(value); err != nil {
+			return err
+		}
+		ensureClusterGit(cl).Server = value
+	case "git.hostname":
+		ensureClusterGit(cl).Hostname = value
+	case "git.owner":
+		ensureClusterGit(cl).Owner = value
+	case "git.repository":
+		ensureClusterGit(cl).Repository = value
+	case "git.branch":
+		ensureClusterGit(cl).Branch = value
+	case "git.clusterPath":
+		ensureClusterGit(cl).ClusterPath = value
+	case "git.pat":
+		ensureClusterGit(cl).PAT = value
+	case "registry.repository":
+		ensureClusterRegistry(cl).Repository = value
+	case "registry.credentials":
+		if !strings.Contains(value, ":") {
+			return cli.Exitf(cli.ExitUsage, "registry credentials must be in user:pass format")
+		}
+		ensureClusterRegistry(cl).Credentials = value
+	case "base.url":
+		ensureClusterBase(cl).URL = value
+	case "base.branch":
+		ensureClusterBase(cl).Branch = value
+	case "base.pat":
+		ensureClusterBase(cl).PAT = value
 	default:
 		return cli.Exitf(cli.ExitUsage, "unknown configuration key %q", key)
 	}
 	return nil
 }
 
-func unsetConfigValue(cfg *config.Config, key string) error {
+// unsetConfigValueIn clears a dotted configuration key. When cluster is empty
+// the current cluster is used; the shared sections are always cluster-scoped.
+func unsetConfigValueIn(cfg *config.Config, cluster, key string) error {
+	key = strings.TrimSpace(key)
+	target, err := resolveScopeTarget(cfg, cluster, key)
+	if err != nil {
+		return err
+	}
+	key = scopeKey(target, key)
 	switch key {
 	case "current-context":
 		cfg.CurrentContext = ""
+	default:
+		return unsetClusterValue(cfg, key)
+	}
+	return nil
+}
+
+// unsetClusterValue clears a per-cluster value. Only secret fields are
+// unsettable, matching the global behavior.
+func unsetClusterValue(cfg *config.Config, key string) error {
+	if !strings.HasPrefix(key, "clusters.") {
+		return cli.Exitf(cli.ExitUsage, "unknown or non-unsettable configuration key %q", key)
+	}
+	rest := strings.TrimPrefix(key, "clusters.")
+	dot := strings.IndexByte(rest, '.')
+	if dot < 0 {
+		return cli.Exitf(cli.ExitUsage, "unknown or non-unsettable configuration key %q", key)
+	}
+	cl := cfg.Clusters[rest[:dot]]
+	if cl == nil {
+		return cli.Exitf(cli.ExitUsage, "unknown or non-unsettable configuration key %q", key)
+	}
+	switch rest[dot+1:] {
 	case "git.pat":
-		if cfg.Git != nil {
-			cfg.Git.PAT = ""
+		if cl.Git != nil {
+			cl.Git.PAT = ""
 		}
 	case "registry.credentials":
-		if cfg.Registry != nil {
-			cfg.Registry.Credentials = ""
+		if cl.Registry != nil {
+			cl.Registry.Credentials = ""
 		}
 	case "base.pat":
-		if cfg.Base != nil {
-			cfg.Base.PAT = ""
+		if cl.Base != nil {
+			cl.Base.PAT = ""
 		}
 	default:
 		return cli.Exitf(cli.ExitUsage, "unknown or non-unsettable configuration key %q", key)
@@ -191,11 +276,41 @@ func setCurrentContext(cfg *config.Config, value string) error {
 	return nil
 }
 
-func ensureGit(cfg *config.Config) *config.Git {
-	if cfg.Git == nil {
-		cfg.Git = &config.Git{}
+// getOrCreateCluster returns the named cluster entry, creating a minimal one
+// when absent so callers converge on the same initialization. clusterName and
+// provider are only applied when creating; an empty clusterName defaults to the
+// entry key.
+func getOrCreateCluster(cfg *config.Config, name, clusterName, provider string) *config.Cluster {
+	if cl, ok := cfg.Clusters[name]; ok {
+		return cl
 	}
-	return cfg.Git
+	if clusterName == "" {
+		clusterName = name
+	}
+	cl := &config.Cluster{ClusterName: clusterName, Provider: provider}
+	cfg.Clusters[name] = cl
+	return cl
+}
+
+func ensureClusterGit(cl *config.Cluster) *config.Git {
+	if cl.Git == nil {
+		cl.Git = &config.Git{}
+	}
+	return cl.Git
+}
+
+func ensureClusterRegistry(cl *config.Cluster) *config.Registry {
+	if cl.Registry == nil {
+		cl.Registry = &config.Registry{}
+	}
+	return cl.Registry
+}
+
+func ensureClusterBase(cl *config.Cluster) *config.Base {
+	if cl.Base == nil {
+		cl.Base = &config.Base{}
+	}
+	return cl.Base
 }
 
 func ensureVCluster(cl *config.Cluster) *config.VCluster {

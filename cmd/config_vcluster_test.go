@@ -13,10 +13,10 @@ func TestSetConfigValueVClusterFeatures(t *testing.T) {
 	cfg := &config.Config{Clusters: map[string]*config.Cluster{
 		"dev": {Provider: config.ProviderVCluster, VCluster: &config.VCluster{HostContext: "ctx"}},
 	}}
-	if err := setConfigValue(cfg, "clusters.dev.vcluster.metricsServer", "false", false); err != nil {
+	if err := setConfigValueIn(cfg, "", "clusters.dev.vcluster.metricsServer", "false", false); err != nil {
 		t.Fatal(err)
 	}
-	if err := setConfigValue(cfg, "clusters.dev.vcluster.oidc", "off", false); err != nil {
+	if err := setConfigValueIn(cfg, "", "clusters.dev.vcluster.oidc", "off", false); err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Clusters["dev"].VCluster.MetricsEnabled() {
@@ -25,16 +25,16 @@ func TestSetConfigValueVClusterFeatures(t *testing.T) {
 	if cfg.Clusters["dev"].VCluster.OIDCEnabled() {
 		t.Error("oidc should be disabled")
 	}
-	if err := setConfigValue(cfg, "clusters.dev.vcluster.oidc", "maybe", false); err == nil {
+	if err := setConfigValueIn(cfg, "", "clusters.dev.vcluster.oidc", "maybe", false); err == nil {
 		t.Error("expected an error for a non-boolean value")
 	}
-	if err := setConfigValue(cfg, "clusters.dev.vcluster.apiServerServiceType", "clusterip", false); err != nil {
+	if err := setConfigValueIn(cfg, "", "clusters.dev.vcluster.apiServerServiceType", "clusterip", false); err != nil {
 		t.Fatal(err)
 	}
 	if got := cfg.Clusters["dev"].VCluster.APIServerServiceType; got != config.VClusterServiceTypeClusterIP {
 		t.Errorf("apiServerServiceType = %q, want ClusterIP", got)
 	}
-	if err := setConfigValue(cfg, "clusters.dev.vcluster.apiServerServiceType", "nope", false); err == nil {
+	if err := setConfigValueIn(cfg, "", "clusters.dev.vcluster.apiServerServiceType", "nope", false); err == nil {
 		t.Error("expected an error for an invalid service type")
 	}
 }
@@ -46,7 +46,7 @@ func TestConfigInitDisablesVClusterFeatures(t *testing.T) {
 
 	_, errOut, code := runCLI(t, "",
 		"config", "init", "--non-interactive", "--provider", "vcluster",
-		"--cluster", "dev", "--cluster-name", "dev", "--domain", "alice.test",
+		"--cluster-name", "dev", "--domain", "alice.test",
 		"--git-server", "github", "--host-context", "che-ctx",
 		"--disable-vcluster-metrics", "--disable-vcluster-oidc",
 		"--vcluster-api-server-service-type", "clusterip",
@@ -73,7 +73,7 @@ func TestConfigInitDefaultsVClusterFeaturesEnabled(t *testing.T) {
 
 	_, errOut, code := runCLI(t, "",
 		"config", "init", "--non-interactive", "--provider", "vcluster",
-		"--cluster", "dev", "--cluster-name", "dev", "--domain", "alice.test",
+		"--cluster-name", "dev", "--domain", "alice.test",
 		"--git-server", "github", "--host-context", "che-ctx",
 	)
 	if code != 0 {

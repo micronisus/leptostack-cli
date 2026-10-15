@@ -69,27 +69,28 @@ func ImportLegacy(path string) (*Config, error) {
 		clusterPath = "clusters/" + clusterName
 	}
 
+	cl.Git = &Git{
+		Server:      kv["GIT_SERVER"],
+		Hostname:    kv["GIT_HOSTNAME"],
+		Owner:       kv["GIT_OWNER"],
+		Repository:  kv["GIT_REPO"],
+		Branch:      branch,
+		ClusterPath: clusterPath,
+		PAT:         kv["GIT_PAT"],
+	}
+	cl.Registry = &Registry{
+		Repository:  kv["MODULE_REGISTRY_REPOSITORY"],
+		Credentials: kv["MODULE_REGISTRY_CREDENTIALS"],
+	}
+	cl.Base = &Base{
+		PAT: kv["RESOURCES_GIT_PAT"],
+	}
+
 	cfg := &Config{
 		APIVersion:     APIVersion,
 		Kind:           Kind,
 		CurrentContext: clusterName,
 		Clusters:       map[string]*Cluster{clusterName: cl},
-		Git: &Git{
-			Server:      kv["GIT_SERVER"],
-			Hostname:    kv["GIT_HOSTNAME"],
-			Owner:       kv["GIT_OWNER"],
-			Repository:  kv["GIT_REPO"],
-			Branch:      branch,
-			ClusterPath: clusterPath,
-			PAT:         kv["GIT_PAT"],
-		},
-		Registry: &Registry{
-			Repository:  kv["MODULE_REGISTRY_REPOSITORY"],
-			Credentials: kv["MODULE_REGISTRY_CREDENTIALS"],
-		},
-		Base: &Base{
-			PAT: kv["RESOURCES_GIT_PAT"],
-		},
 	}
 	cfg.ApplyDefaults()
 	if err := cfg.Validate(); err != nil {

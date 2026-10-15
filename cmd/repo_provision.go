@@ -121,11 +121,7 @@ func persistRepository(app *cli.App, r *config.Resolved, server forge.Server, ho
 	if err != nil {
 		return err
 	}
-	cl := cfg.Clusters[r.Name]
-	if cl == nil {
-		cl = &config.Cluster{ClusterName: r.ClusterName, Provider: r.Provider}
-		cfg.Clusters[r.Name] = cl
-	}
+	cl := getOrCreateCluster(cfg, r.Name, r.ClusterName, r.Provider)
 	cl.Git = &config.Git{
 		Server:      string(server),
 		Hostname:    hostname,

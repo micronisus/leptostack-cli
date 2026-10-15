@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/micronisus/leptostack-cli/internal/cli"
 	"github.com/micronisus/leptostack-cli/internal/testutil"
 )
 
@@ -13,7 +14,7 @@ func TestDeleteOnlyDeletesCluster(t *testing.T) {
 	env := newEnv(t)
 	testutil.SetHomeConfig(t, testConfig)
 
-	_, errOut, code := runCLI(t, "", "delete", "cluster", "--yes")
+	_, errOut, code := runCLI(t, "", "delete", "cluster", "local", "--yes")
 	if code != 0 {
 		t.Fatalf("exit code = %d (stderr=%s)", code, errOut)
 	}
@@ -42,5 +43,35 @@ func TestDeleteRequiresSubcommand(t *testing.T) {
 	}
 	if env.HasInvocation(t, "minikube delete") {
 		t.Fatalf("bare delete must not delete the cluster; got %v", env.Invocations(t))
+	}
+}
+
+// TestDeleteClusterRequiresName guards that `delete cluster` needs an explicit
+// cluster name.
+func TestDeleteClusterRequiresName(t *testing.T) {
+	env := newEnv(t)
+	testutil.SetHomeConfig(t, testConfig)
+
+	_, _, code := runCLI(t, "", "delete", "cluster", "--yes")
+	if code != cli.ExitUsage {
+		t.Fatalf("exit code = %d, want %d", code, cli.ExitUsage)
+	}
+	if env.HasInvocation(t, "minikube delete") {
+		t.Fatalf("missing name must not delete the cluster; got %v", env.Invocations(t))
+	}
+}
+
+// TestDeleteClusterRejectsClusterFlag guards that -c is not applicable to
+// `delete cluster`; the name is positional.
+func TestDeleteClusterRejectsClusterFlag(t *testing.T) {
+	env := newEnv(t)
+	testutil.SetHomeConfig(t, testConfig)
+
+	_, errOut, code := runCLI(t, "", "delete", "cluster", "-c", "local", "--yes")
+	if code != cli.ExitUsage {
+		t.Fatalf("exit code = %d (stderr=%s), want %d", code, errOut, cli.ExitUsage)
+	}
+	if env.HasInvocation(t, "minikube delete") {
+		t.Fatalf("-c must not delete a cluster; got %v", env.Invocations(t))
 	}
 }

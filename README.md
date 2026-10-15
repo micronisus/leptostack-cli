@@ -117,7 +117,8 @@ Two rules define the command surface:
    ```
 
 2. **Cluster lifecycle** uses bare verbs (`start`, `stop`, `restart`, `status`,
-   `connect`), acting on the selected cluster; `delete cluster` removes it.
+   `connect`), acting on the selected cluster; `delete cluster <name>` removes the
+   named one.
 
 Lists are plural, single objects singular, all lowercase. Command names contain
 hyphens only where already established (`port-forward`).
@@ -200,8 +201,8 @@ kubectl --context "$ctx" get pods -A
 # Wait for readiness with a real exit code
 leptostack wait kustomization all --ready --timeout 20m
 
-# Non-interactive delete
-leptostack delete cluster --yes
+# Non-interactive delete (the cluster name is required)
+leptostack delete cluster local --yes
 
 # Credentials without a prompt or disk round-trip
 op read "op://LeptoStack/ghcr/password" \
@@ -214,7 +215,7 @@ Clusters are named entries in the config. Select one with `-c/--cluster` or
 `leptostack config use-context <name>`; list them with `get clusters`.
 
 ```bash
-leptostack config init --cluster devops --provider vcluster ...   # adds a named cluster
+leptostack config init --cluster-name devops --provider vcluster ...   # adds a named cluster
 leptostack start -c local          # minikube
 leptostack start -c devops         # vcluster on the host cluster — runs concurrently
 leptostack get clusters            # both clusters, live state
@@ -341,6 +342,22 @@ clusters:
     minikube:
       cpus: 8
       memoryMB: 24576
+    git:
+      server: github            # github | gitea | gitlab
+      hostname: ""
+      owner: micronisus
+      repository: leptostack-fluxcd
+      branch: main
+      clusterPath: clusters/{cluster}
+      # pat: read from LEPTOSTACK_GIT_PAT when absent
+    registry:
+      repository: ghcr.io
+      # credentials: user:pass — from LEPTOSTACK_REGISTRY_CREDENTIALS when absent
+    base:
+      url: https://github.com/leptostack-fluxcd/leptostack-base.git
+      branch: main
+      # pat: read-only token for the private leptostack-base repo; from
+      # LEPTOSTACK_BASE_PAT (or RESOURCES_GIT_PAT) when absent
   devops:
     provider: vcluster
     clusterName: devops
@@ -352,25 +369,8 @@ clusters:
       # metricsServer: false   # disable the vcluster metrics-server integration
       # oidc: false            # disable vcluster API server OIDC authentication
       # apiServerServiceType: ClusterIP   # API server Service type (default LoadBalancer)
-
-git:
-  server: github            # github | gitea | gitlab
-  hostname: ""
-  owner: micronisus
-  repository: leptostack-fluxcd
-  branch: main
-  clusterPath: clusters/{cluster}
-  # pat: read from LEPTOSTACK_GIT_PAT when absent
-
-registry:
-  repository: ghcr.io
-  # credentials: user:pass — from LEPTOSTACK_REGISTRY_CREDENTIALS when absent
-
-base:
-  url: https://github.com/leptostack-fluxcd/leptostack-base.git
-  branch: main
-  # pat: read-only token for the private leptostack-base repo; from
-  # LEPTOSTACK_BASE_PAT (or RESOURCES_GIT_PAT) when absent
+    # git/registry/base are per cluster too: devops carries its own copies
+    # (e.g. a different clusterPath or base repository). Nothing is shared.
 
 preferences:
   autoUpgradeCheck: true
@@ -378,6 +378,13 @@ preferences:
 
 - **Required keys and enums are validated.** Invalid config fails fast with exit
   code 3 and a message naming the exact key path.
+- **`git`, `registry` and `base` are cluster-scoped.** There are no global
+  sections. `config set`/`config unset` write these to the selected cluster: with
+  `-c/--cluster` the value targets that cluster, otherwise the current-context
+  cluster, so `leptostack -c local config set base.pat <token> --secret` updates
+  `clusters.local.base.pat`. An explicit `clusters.<name>.…` key always targets
+  that cluster. Unset values fall back to defaults (git `server`/`branch`,
+  registry repository, base url/branch) at resolve time; env vars still override.
 - **Secrets via env first.** `LEPTOSTACK_GIT_PAT`,
   `LEPTOSTACK_REGISTRY_CREDENTIALS` and `LEPTOSTACK_BASE_PAT` (or
   `RESOURCES_GIT_PAT`) take precedence over the file, so CI never writes secrets
@@ -391,7 +398,7 @@ preferences:
   the API server gets no `--oidc-*` flags and the OIDC CA secret and
   ClusterRoleBinding are not created. The values file is applied when the
   vcluster is created, so recreate an existing cluster
-  (`leptostack delete cluster && leptostack start`) for a toggle change to take
+  (`leptostack delete cluster <name> && leptostack start`) for a toggle change to take
   effect.
 - **vcluster API server Service type.** `vcluster.apiServerServiceType` sets the
   Service type of the vcluster API server and defaults to `LoadBalancer`. Set it
@@ -401,7 +408,13 @@ preferences:
   feature toggles, the values file is applied at creation time.
 - **Config commands:** `config init` (wizard, `--non-interactive`, `--from-file`),
   `config view [--show-secrets]`, `config set <key> <value> [--secret]`,
-  `config unset <key>`, `config use-context <cluster>`.
+  `config unset <key>`, `config use-context <cluster>`. `config init` always adds
+  a new cluster (the name comes from `--cluster-name` or the prompt); it rejects a
+  name that already exists and, interactively, asks for a new one. `-c/--cluster`
+  is not applicable to `config init`. `config set`/`unset` target the `-c/--cluster`
+  cluster for the cluster-scoped sections, falling back to the current-context
+  cluster. `delete cluster <name>` takes the cluster name as an argument;
+  `-c/--cluster` is not applicable there either.
 
 ## Migrating from the shell CLI
 
@@ -415,7 +428,7 @@ The old flat command names were removed; use the current grammar:
 | Old shell command | Current command |
 |---|---|
 | `configure` | `config init` |
-| `reset` | `delete cluster` |
+| `reset` | `delete cluster <name>` |
 | `reconnect` | `connect` |
 | `rebootstrap` | `bootstrap` |
 | `reconcile` (bare) | `reconcile kustomization flux-system --with-source` |

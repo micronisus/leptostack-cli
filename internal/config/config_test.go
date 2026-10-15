@@ -51,14 +51,14 @@ func TestImportLegacy(t *testing.T) {
 	if cl.Minikube.CPUs != 8 || cl.Minikube.MemoryMB != 24576 {
 		t.Errorf("minikube resources: %+v", cl.Minikube)
 	}
-	if cfg.Git.PAT != "ghp_secret" || cfg.Git.Owner != "micronisus" {
-		t.Errorf("git: %+v", cfg.Git)
+	if cl.Git.PAT != "ghp_secret" || cl.Git.Owner != "micronisus" {
+		t.Errorf("git: %+v", cl.Git)
 	}
-	if cfg.Base.PAT != "res_secret" {
-		t.Errorf("base pat = %q", cfg.Base.PAT)
+	if cl.Base.PAT != "res_secret" {
+		t.Errorf("base pat = %q", cl.Base.PAT)
 	}
-	if cfg.Registry.Credentials != "user:pass" {
-		t.Errorf("registry creds = %q", cfg.Registry.Credentials)
+	if cl.Registry.Credentials != "user:pass" {
+		t.Errorf("registry creds = %q", cl.Registry.Credentials)
 	}
 }
 
@@ -68,11 +68,16 @@ func TestResolveEnvOverrides(t *testing.T) {
 		Kind:           Kind,
 		CurrentContext: "local",
 		Clusters: map[string]*Cluster{
-			"local": {Provider: ProviderMinikube, ClusterName: "local", Domain: "x.test", Minikube: &Minikube{CPUs: 4, MemoryMB: 8192}},
+			"local": {
+				Provider:    ProviderMinikube,
+				ClusterName: "local",
+				Domain:      "x.test",
+				Minikube:    &Minikube{CPUs: 4, MemoryMB: 8192},
+				Git:         &Git{PAT: "from-file", Branch: "main", Owner: "o", Repository: "r", ClusterPath: "clusters/{cluster}"},
+				Registry:    &Registry{Repository: "ghcr.io", Credentials: "file:creds"},
+				Base:        &Base{URL: "u", Branch: "main"},
+			},
 		},
-		Git:      &Git{PAT: "from-file", Branch: "main", Owner: "o", Repository: "r", ClusterPath: "clusters/{cluster}"},
-		Registry: &Registry{Repository: "ghcr.io", Credentials: "file:creds"},
-		Base:     &Base{URL: "u", Branch: "main"},
 	}
 	t.Setenv(EnvGitPAT, "from-env")
 	t.Setenv(EnvRegistryCredentials, "env:creds")
@@ -112,16 +117,19 @@ func TestValidateRejectsBadProvider(t *testing.T) {
 
 func TestRedacted(t *testing.T) {
 	cfg := &Config{
-		Git:      &Git{PAT: "secret"},
-		Registry: &Registry{Credentials: "user:pass"},
-		Base:     &Base{PAT: "tsecret"},
-		Clusters: map[string]*Cluster{"local": {Provider: ProviderMinikube}},
+		Clusters: map[string]*Cluster{"local": {
+			Provider: ProviderMinikube,
+			Git:      &Git{PAT: "secret"},
+			Registry: &Registry{Credentials: "user:pass"},
+			Base:     &Base{PAT: "tsecret"},
+		}},
 	}
 	red := cfg.Redacted()
-	if red.Git.PAT != "<redacted>" || red.Registry.Credentials != "<redacted>" || red.Base.PAT != "<redacted>" {
-		t.Fatalf("redaction failed: %+v", red)
+	cl := red.Clusters["local"]
+	if cl.Git.PAT != "<redacted>" || cl.Registry.Credentials != "<redacted>" || cl.Base.PAT != "<redacted>" {
+		t.Fatalf("redaction failed: %+v", cl)
 	}
-	if cfg.Git.PAT != "secret" {
+	if cfg.Clusters["local"].Git.PAT != "secret" {
 		t.Error("original config mutated by Redacted")
 	}
 }
@@ -200,6 +208,13 @@ base:
 	if r.VCluster.HostNamespace != "alice" || r.Provider != ProviderVCluster {
 		t.Fatalf("unexpected resolved vcluster: %+v", r.VCluster)
 	}
+	// The removed global git/base sections fold into the cluster.
+	if r.Git.Server != "github" || r.Git.Repository != "auto" {
+		t.Fatalf("global git did not fold into the cluster: %+v", r.Git)
+	}
+	if r.Base.URL != "https://github.com/leptostack-fluxcd/leptostack-base.git" {
+		t.Fatalf("global base did not fold into the cluster: %+v", r.Base)
+	}
 }
 
 func TestLoadFromMigratesTemplateToBase(t *testing.T) {
@@ -229,8 +244,12 @@ template:
 	if err != nil {
 		t.Fatalf("config with a template block should still load: %v", err)
 	}
-	if cfg.Base == nil || cfg.Base.PAT != "old_secret" {
-		t.Fatalf("template.pat should migrate to base.pat: %+v", cfg.Base)
+	cl := cfg.Clusters["local"]
+	if cl.Base == nil || cl.Base.PAT != "old_secret" {
+		t.Fatalf("template.pat should migrate to the cluster base.pat: %+v", cl.Base)
+	}
+	if cl.Git == nil || cl.Git.Server != "github" || cl.Git.Repository != "auto" {
+		t.Fatalf("global git should fold into the cluster: %+v", cl.Git)
 	}
 	r, err := cfg.Resolve("local")
 	if err != nil {
@@ -241,5 +260,65 @@ template:
 	}
 	if r.Base.PAT != "old_secret" {
 		t.Fatalf("resolved base pat = %q", r.Base.PAT)
+	}
+}
+
+func TestResolveDefaultsGitServer(t *testing.T) {
+	cfg := &Config{
+		CurrentContext: "local",
+		Clusters: map[string]*Cluster{
+			"local": {Provider: ProviderMinikube, ClusterName: "local", Domain: "x.test"},
+		},
+	}
+	r, err := cfg.Resolve("local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Git.Server != DefaultGitServer {
+		t.Errorf("git server = %q, want %q", r.Git.Server, DefaultGitServer)
+	}
+}
+
+func TestLoadFromFoldsClusterTemplateOverGlobalBase(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	doc := `apiVersion: v1
+kind: LeptostackConfig
+current-context: local
+clusters:
+  local:
+    provider: minikube
+    clusterName: local
+    domain: local.test
+    template:
+      pat: cluster_secret
+base:
+  pat: global_secret
+`
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadFrom(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Clusters["local"].Base.PAT; got != "cluster_secret" {
+		t.Errorf("base pat = %q, want cluster_secret (the per-cluster value must win)", got)
+	}
+}
+
+func TestLoadFromRejectsGlobalSectionsWithoutClusters(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	doc := `apiVersion: v1
+kind: LeptostackConfig
+git:
+  server: github
+`
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadFrom(path); err == nil {
+		t.Fatal("expected an error for global sections with no cluster to migrate into")
 	}
 }
