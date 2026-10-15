@@ -47,8 +47,6 @@ spec:
         metadata:
           name: not-used
         spec:
-          storage:
-            size: 10Gi
           imageCatalogRef:
             name: supabase
           postgresUID: 100

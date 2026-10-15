@@ -10,7 +10,8 @@ data:
   leptostack_domain: minikube.test
   leptostack_name: portal
   leptostack_acme_email: ""
-  # The following are service hostnames that can be added in the overlay patches
+
+  #### Hostnames
   # sso_hostname: portal-sso
   # che_hostname: portal-che
   # dashboard_hostname: portal-dashboard
@@ -19,3 +20,14 @@ data:
   # git_hostname: portal-git
   # llm_hostname: portal-llm
   # registry_hostname: portal-registry
+
+  #### Storage Sizes
+  # pgcluster_storage_size: 10Gi
+  # seaweedfs_storage_size: 10Gi
+  # forgejo_storage_size: 10Gi
+  # harbor_registry_storage_size: 10Gi
+  # harbor_trivy_storage_size: 10Gi
+  # openbao_storage_size: 10Gi
+  # rabbitmq_storage_size: 10Gi
+  # taiga_static_storage_size: 10Gi
+  # taiga_media_storage_size: 10Gi
