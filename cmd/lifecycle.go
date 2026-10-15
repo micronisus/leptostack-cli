@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -130,14 +131,24 @@ func createLeptostackBaseSecret(ctx context.Context, app *cli.App, r *config.Res
 	if pat == "" {
 		pat = r.Git.PAT
 	}
+	data := map[string]string{
+		"username": "git",
+		"password": pat,
+	}
+	// A git server behind an enterprise CA is validated with a ca.crt entry in
+	// the same secret the base source already references.
+	if r.Git.CAFile != "" {
+		caBundle, err := os.ReadFile(r.Git.CAFile)
+		if err != nil {
+			return cli.Exitf(cli.ExitFailure, "could not read the git CA file %q: %v", r.Git.CAFile, err)
+		}
+		data["ca.crt"] = string(caBundle)
+	}
 	if _, err := kube.OutputCombined(ctx, "get", "secret", "leptostack-base", "-n", "flux-system"); err == nil {
 		app.IO.Errln("  Secret leptostack-base already exists, updating...")
 		_ = kube.RunDiscard(ctx, "delete", "secret", "leptostack-base", "-n", "flux-system")
 	}
-	manifest := secrets.ManifestStringData("leptostack-base", "flux-system", "Opaque", map[string]string{
-		"username": "git",
-		"password": pat,
-	})
+	manifest := secrets.ManifestStringData("leptostack-base", "flux-system", "Opaque", data)
 	if err := kube.ApplyJSON(ctx, manifest); err != nil {
 		return err
 	}

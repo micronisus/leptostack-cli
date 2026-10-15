@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -31,6 +32,7 @@ type initOptions struct {
 	gitServer            string
 	gitPATStdin          bool
 	gitPAT               string
+	gitCAFile            string
 	basePAT              bool
 	baseURL              string
 	baseBranch           string
@@ -92,6 +94,7 @@ func newConfigInitCmd(app *cli.App) *cobra.Command {
 	f.StringVar(&opts.gitServer, "git-server", "", "Git server: github, gitea or gitlab")
 	f.BoolVar(&opts.gitPATStdin, "git-pat-stdin", false, "Read the Git PAT from stdin")
 	f.StringVar(&opts.gitPAT, "git-pat", "", "Git PAT (prefer --git-pat-stdin or LEPTOSTACK_GIT_PAT)")
+	f.StringVar(&opts.gitCAFile, "git-ca-file", "", "Path to a PEM CA bundle for the GitOps and leptostack-base git servers (enterprise CA)")
 	f.BoolVar(&opts.basePAT, "base-pat-stdin", false, "Read the leptostack-base PAT from stdin")
 	f.BoolVar(&opts.basePAT, "resources-pat-stdin", false, "Deprecated alias for --base-pat-stdin")
 	_ = f.MarkHidden("resources-pat-stdin")
@@ -286,6 +289,17 @@ func runConfigInit(cmd *cobra.Command, app *cli.App, opts *initOptions) error {
 	}
 	git.Branch = orString(opts.branch, orString(git.Branch, config.DefaultGitBranch))
 	git.ClusterPath = orString(opts.clusterPath, orString(git.ClusterPath, "clusters/"+cl.ClusterName))
+
+	if opts.gitCAFile != "" {
+		caFile, err := filepath.Abs(opts.gitCAFile)
+		if err != nil {
+			return cli.Exitf(cli.ExitUsage, "could not resolve --git-ca-file %q: %v", opts.gitCAFile, err)
+		}
+		if _, err := os.ReadFile(caFile); err != nil {
+			return cli.Exitf(cli.ExitUsage, "could not read --git-ca-file %q: %v", caFile, err)
+		}
+		git.CAFile = caFile
+	}
 
 	// Secrets. When a concrete repository is configured (not auto), a PAT is
 	// required for both the GitOps repository and the leptostack-base

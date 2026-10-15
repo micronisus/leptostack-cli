@@ -271,6 +271,21 @@ printf 'ghp_gitops_token\nghp_base_token\n' \
       --git-pat-stdin --base-pat-stdin
 ```
 
+When the git server uses a private (enterprise) CA, point `config init` at the CA
+bundle with `--git-ca-file` (or `LEPTOSTACK_GIT_CA_FILE`). The path is stored as
+`git.caFile` and used for **both** repositories:
+
+```bash
+leptostack config init --repo-url https://git.example.com/me/my-gitops \
+  --git-ca-file /etc/pki/enterprise-ca.pem
+```
+
+With a CA configured, `flux bootstrap` is run with `--ca-file`, and on
+`leptostack start` the CA bundle is added as a `ca.crt` key to the
+`leptostack-base` Secret in `flux-system` (the same Secret that holds the base
+PAT), so the base GitRepository trusts the server. No change to the
+GitRepository manifest is needed.
+
 Token minting is capability-aware, because the hosts differ:
 
 | Server | CLI | Repository | Push/pull token | Read-only token |
@@ -360,6 +375,7 @@ clusters:
       branch: main
       clusterPath: clusters/{cluster}
       # pat: read from LEPTOSTACK_GIT_PAT when absent
+      # caFile: /etc/pki/enterprise-ca.pem   # PEM CA bundle for a private git server
     registry:
       repository: ghcr.io
       # credentials: user:pass — from LEPTOSTACK_REGISTRY_CREDENTIALS when absent

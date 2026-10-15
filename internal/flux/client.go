@@ -102,8 +102,10 @@ func (c *Client) CreateSource(ctx context.Context, args ...string) error {
 }
 
 // Bootstrap runs flux bootstrap for the configured server, exporting the PAT in
-// the provider-specific environment variable.
-func (c *Client) Bootstrap(ctx context.Context, server, token, hostname, owner, repo, branch, path string) error {
+// the provider-specific environment variable. When caFile is set it is passed to
+// flux as --ca-file so the created GitRepository trusts the server's enterprise
+// CA.
+func (c *Client) Bootstrap(ctx context.Context, server, token, hostname, owner, repo, branch, path, caFile string) error {
 	args := []string{"bootstrap"}
 	switch server {
 	case "github":
@@ -120,6 +122,9 @@ func (c *Client) Bootstrap(ctx context.Context, server, token, hostname, owner, 
 		}
 	default:
 		return fmt.Errorf("unsupported git server %q", server)
+	}
+	if caFile != "" {
+		args = append(args, "--ca-file="+caFile)
 	}
 	args = append(args,
 		"--components-extra=image-reflector-controller,image-automation-controller",

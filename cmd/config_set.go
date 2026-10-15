@@ -197,6 +197,8 @@ func setClusterValue(cfg *config.Config, key, value string) error {
 		ensureClusterGit(cl).ClusterPath = value
 	case "git.pat":
 		ensureClusterGit(cl).PAT = value
+	case "git.caFile":
+		ensureClusterGit(cl).CAFile = value
 	case "registry.repository":
 		ensureClusterRegistry(cl).Repository = value
 	case "registry.credentials":

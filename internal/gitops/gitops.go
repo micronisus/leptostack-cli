@@ -213,7 +213,9 @@ func (m *Manager) SyncClusterTemplate(ctx context.Context, force bool) error {
 }
 
 // rewriteBaseSource points the embedded leptostack-base GitRepository at the
-// configured base URL and branch.
+// configured base URL and branch. The enterprise CA, when configured, is carried
+// as a ca.crt key in the same secret the source already references (see
+// createLeptostackBaseSecret), so no change to the source manifest is needed.
 func rewriteBaseSource(path, url, branch string) error {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -241,7 +243,7 @@ func (m *Manager) RunBootstrap(ctx context.Context, resync bool) error {
 	}
 	g := m.Resolved.Git
 	m.IO.Errf("Running flux bootstrap for %s...\n\n", g.Server)
-	if err := m.Flux.Bootstrap(ctx, g.Server, g.PAT, m.gitHost(), g.Owner, g.Repository, g.Branch, m.Resolved.ClonePath()); err != nil {
+	if err := m.Flux.Bootstrap(ctx, g.Server, g.PAT, m.gitHost(), g.Owner, g.Repository, g.Branch, m.Resolved.ClonePath(), g.CAFile); err != nil {
 		return err
 	}
 	m.IO.Errln("\nFlux bootstrap has been started.\nYou can check the status of the deployment by running:\n  flux get kustomizations")

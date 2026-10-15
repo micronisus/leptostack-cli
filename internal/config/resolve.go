@@ -138,6 +138,9 @@ func applyGitEnv(g *Git) {
 	if v := os.Getenv(EnvGitPAT); v != "" {
 		g.PAT = v
 	}
+	if v := os.Getenv(EnvGitCAFile); v != "" {
+		g.CAFile = v
+	}
 }
 
 // ClonePath expands the {cluster} placeholder in clusterPath.

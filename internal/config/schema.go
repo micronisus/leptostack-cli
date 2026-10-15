@@ -99,6 +99,11 @@ type Git struct {
 	Branch      string `json:"branch,omitempty"`
 	ClusterPath string `json:"clusterPath,omitempty"`
 	PAT         string `json:"pat,omitempty"`
+	// CAFile is the path to a PEM CA bundle used to validate the git server's
+	// TLS certificate. It applies to both the GitOps repository and the
+	// leptostack-base repository when they are served over HTTPS with a private
+	// (enterprise) CA.
+	CAFile string `json:"caFile,omitempty"`
 }
 
 // Registry holds the module image registry configuration.

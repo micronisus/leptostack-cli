@@ -48,6 +48,12 @@ func TestSetConfigValueExplicitClusterKey(t *testing.T) {
 	if cl == nil || cl.Git == nil || cl.Git.Branch != "dev" {
 		t.Fatalf("clusters.dev.git.branch not set: %+v", cl)
 	}
+	if err := setConfigValueIn(cfg, "", "clusters.dev.git.caFile", "/etc/pki/ca.pem", false); err != nil {
+		t.Fatal(err)
+	}
+	if cl.Git.CAFile != "/etc/pki/ca.pem" {
+		t.Errorf("clusters.dev.git.caFile = %q, want /etc/pki/ca.pem", cl.Git.CAFile)
+	}
 	if err := setConfigValueIn(cfg, "", "clusters.dev.git.server", "nope", false); err == nil {
 		t.Error("expected an error for an invalid git server")
 	}
