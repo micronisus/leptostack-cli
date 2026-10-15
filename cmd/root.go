@@ -106,6 +106,7 @@ Exit codes:
 		newWaitCmd(app),
 		newBootstrapCmd(app),
 		newSyncCmd(app),
+		newGenerateCmd(app),
 		newEnableCmd(app),
 		newDisableCmd(app),
 		newDNSCmd(app),

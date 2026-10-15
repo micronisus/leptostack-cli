@@ -20,6 +20,7 @@ data:
   # git_hostname: portal-git
   # llm_hostname: portal-llm
   # registry_hostname: portal-registry
+  # projects_hostname: portal-projects
 
   #### Storage Sizes
   # pgcluster_storage_size: 10Gi

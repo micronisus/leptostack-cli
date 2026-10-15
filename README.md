@@ -144,6 +144,7 @@ leptostack
 ├── reconcile kustomization|source [name]
 ├── wait kustomization <name>|all [--ready] [--timeout]
 ├── bootstrap | sync cluster | sync flux
+├── generate fluxcd [dir]                # export the embedded FluxCD repository template
 ├── enable|disable kustomization <name>|all      # suspend/resume aliases
 ├── dns update|get|delete
 ├── ca status|install|export
@@ -304,6 +305,24 @@ leptostack start
 
 For GitHub the automation reuses the `gh` CLI's token (it must carry the `repo`
 scope) and notes that GitHub does not support minting PATs non-interactively.
+
+## Exporting the FluxCD repository template
+
+`generate fluxcd` writes the embedded cluster template — the same one used by
+`sync cluster` and `bootstrap` — into a local directory, without a
+configuration or a cluster:
+
+```bash
+mkdir my-gitops && cd my-gitops
+leptostack generate fluxcd            # into the current directory
+
+leptostack generate fluxcd path/to/repo   # or an explicit directory
+```
+
+The template is written as-is, so the cluster overlay remains under
+`clusters/example`; rename it and customize the manifests before pushing the
+result to a Git repository of your choosing. A non-empty destination is refused
+unless `--force` is given (existing unrelated files are never removed).
 
 ## Flux sources and secrets
 
