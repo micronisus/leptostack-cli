@@ -16,7 +16,7 @@ func resolved() *config.Resolved {
 
 func TestCatalog(t *testing.T) {
 	names := SupportedNames(resolved())
-	want := []string{"openbao", "rabbitmq", "postgres", "valkey", "flowable", "greenmail", "seaweedfs"}
+	want := []string{"openbao", "rabbitmq", "postgres", "valkey", "flowable", "greenmail", "rustfs"}
 	if len(names) != len(want) {
 		t.Fatalf("catalog = %v want %v", names, want)
 	}

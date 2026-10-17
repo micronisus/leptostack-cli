@@ -167,7 +167,7 @@ Infrastructure (cert-manager → trust-manager, crossplane → crossplane-post, 
     ├──► apisix → apisix-post
     ├──► centrifugo        (after apisix)
     ├──► camel-k
-    ├──► seaweedfs
+    ├──► rustfs
     ├──► openbao → openbao-init → openbao-post
     │
     ├──► pgcluster         (after openbao-post)

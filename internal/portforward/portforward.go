@@ -43,7 +43,7 @@ func Catalog(r *config.Resolved) []Service {
 		{Name: "valkey", Namespace: c + "-valkey", Resource: "valkey-" + r.LeptostackName + "-valkey", Mappings: []Mapping{{6379, 6379}}},
 		{Name: "flowable", Namespace: c + "-flowable", Resource: "flowable-rest", Mappings: []Mapping{{8080, 8080}}},
 		{Name: "greenmail", Namespace: "greenmail", Resource: "api", Mappings: []Mapping{{8025, 80}}},
-		{Name: "seaweedfs", Namespace: c + "-seaweedfs", Resource: c + "-seaweedfs-filer", Mappings: []Mapping{{8888, 8888}, {8333, 8333}}},
+		{Name: "rustfs", Namespace: c + "-rustfs", Resource: "rustfs-svc", Mappings: []Mapping{{9000, 9000}}},
 	}
 }
 

@@ -12,7 +12,7 @@ spec:
     - name: pgcluster
     - name: openbao-post
     - name: rabbitmq
-    - name: seaweedfs
+    - name: rustfs
     - name: supabase
     - name: valkey
   sourceRef:

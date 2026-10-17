@@ -200,11 +200,11 @@ func printPortForwardCredentials(ctx context.Context, app *cli.App, kube *kubern
 	case "valkey":
 		p, _ := kube.Output(ctx, "-n", c+"-valkey", "get", "secret", "valkey-admin", "-o", "jsonpath={.data.password}")
 		app.IO.Errf("Valkey credentials:\n  Password: %s\n", decode64(p))
-	case "seaweedfs":
-		ns := c + "-seaweedfs"
-		ak, _ := kube.Output(ctx, "-n", ns, "get", "secret", "s3admin-s3-secret", "-o", "jsonpath={.data.accessKey}")
-		sk, _ := kube.Output(ctx, "-n", ns, "get", "secret", "s3admin-s3-secret", "-o", "jsonpath={.data.secretKey}")
-		app.IO.Errf("SeaweedFS S3 admin credentials:\n  Access key: %s\n  Secret key: %s\n", decode64(ak), decode64(sk))
+	case "rustfs":
+		ns := c + "-rustfs"
+		ak, _ := kube.Output(ctx, "-n", ns, "get", "secret", "rustfs-credentials", "-o", "jsonpath={.data.RUSTFS_ACCESS_KEY}")
+		sk, _ := kube.Output(ctx, "-n", ns, "get", "secret", "rustfs-credentials", "-o", "jsonpath={.data.RUSTFS_SECRET_KEY}")
+		app.IO.Errf("RustFS S3 credentials:\n  Access key: %s\n  Secret key: %s\n", decode64(ak), decode64(sk))
 	}
 }
 

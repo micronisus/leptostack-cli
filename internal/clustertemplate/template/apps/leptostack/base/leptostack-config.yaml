@@ -21,10 +21,12 @@ data:
   # llm_hostname: portal-llm
   # registry_hostname: portal-registry
   # projects_hostname: portal-projects
+  # objectstore_hostname: portal-objectstore
 
   #### Storage Sizes
   # pgcluster_storage_size: 10Gi
-  # seaweedfs_storage_size: 10Gi
+  # rustfs_storage_size: 10Gi
+  # rustfs_log_storage_size: 1Gi
   # forgejo_storage_size: 10Gi
   # harbor_registry_storage_size: 10Gi
   # harbor_trivy_storage_size: 10Gi

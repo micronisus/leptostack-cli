@@ -12,7 +12,7 @@ resources:
   - openbao.yaml
   - pgcluster.yaml
   - rabbitmq.yaml
-  - seaweedfs.yaml
+  - rustfs.yaml
   - supabase.yaml
   - superset.yaml
   - valkey.yaml

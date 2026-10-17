@@ -10,7 +10,7 @@ spec:
   dependsOn:
     - name: keycloak-post
     - name: pgcluster
-    - name: seaweedfs
+    - name: rustfs
   sourceRef:
     kind: GitRepository
     name: leptostack-base

@@ -155,7 +155,7 @@ leptostack
 ```
 
 `port-forward` services: `openbao`, `rabbitmq`, `postgres`, `valkey`, `flowable`,
-`greenmail`, `seaweedfs` (plus `all`).
+`greenmail`, `rustfs` (plus `all`).
 
 ## Global flags
 
