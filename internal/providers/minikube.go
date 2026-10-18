@@ -86,6 +86,25 @@ func (m *Minikube) EnsureContext(ctx context.Context) error {
 	return nil
 }
 
+// Connect makes the cluster's minikube profile the active profile. The profile
+// command also switches the kubectl context, which is re-applied here so a
+// --kubeconfig override is honored and the exact context exists.
+func (m *Minikube) Connect(ctx context.Context) error {
+	profile := m.Resolved.MinikubeProfile
+	m.IO.Errf("Switching active minikube profile to %s...\n", profile)
+	cmd := execx.Cmd{Name: "minikube", Args: []string{"profile", profile}}
+	if m.Kubeconfig != "" {
+		cmd.Env = map[string]string{"KUBECONFIG": m.Kubeconfig}
+	}
+	if err := m.R.Run(ctx, cmd); err != nil {
+		return err
+	}
+	if !contextExists(ctx, m.R, m.Kubeconfig, m.Resolved.KubeContext) {
+		return fmt.Errorf("minikube profile %s is not available: kubectl context %s was not found; start it with 'leptostack start'", profile, m.Resolved.KubeContext)
+	}
+	return useContext(ctx, m.R, m.Kubeconfig, m.Resolved.KubeContext)
+}
+
 // addonEnabled reports whether an addon shows as enabled in `addons list -o json`.
 func addonEnabled(jsonOut, profile, addon string) bool {
 	needle := fmt.Sprintf("\"%s\":{\"Profile\":\"%s\",\"Status\":\"enabled\"", addon, profile)

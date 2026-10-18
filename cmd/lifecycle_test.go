@@ -67,3 +67,19 @@ func TestCreateLeptostackBaseSecretOmitsCAWithoutFile(t *testing.T) {
 		t.Errorf("ca.crt must be omitted without a CA file:\n%s", log)
 	}
 }
+
+func TestConnectMinikubeSwitchesProfile(t *testing.T) {
+	env := newEnv(t)
+	testutil.SetHomeConfig(t, testConfig)
+
+	_, errOut, code := runCLI(t, "", "connect")
+	if code != 0 {
+		t.Fatalf("exit code = %d (stderr=%s)", code, errOut)
+	}
+	if !env.HasInvocation(t, "minikube profile leptostack-local") {
+		t.Fatalf("expected the minikube profile to be selected; got %v", env.Invocations(t))
+	}
+	if !env.HasInvocation(t, "kubectl config use-context leptostack-local") {
+		t.Fatalf("expected the kubectl context to be selected; got %v", env.Invocations(t))
+	}
+}

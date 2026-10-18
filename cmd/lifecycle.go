@@ -262,18 +262,23 @@ func newConnectCmd(app *cli.App) *cobra.Command {
 	var force bool
 	c := &cobra.Command{
 		Use:   "connect",
-		Short: "Ensure the vcluster connection (vcluster provider only)",
+		Short: "Connect to the selected cluster",
+		Long:  "Connect selects the active minikube profile or re-establishes the vcluster connection, depending on the selected cluster's provider.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			r, err := resolve(app)
 			if err != nil {
 				return err
 			}
-			if r.Provider != config.ProviderVCluster {
-				return cli.Exitf(cli.ExitUsage, "connect is only available for the vcluster provider (current: %s)", r.Provider)
-			}
 			ctx, cancel := app.Context(clusterWaitTimeout)
 			defer cancel()
+			if r.Provider == config.ProviderMinikube {
+				m := &providers.Minikube{Deps: providerDeps(app, r)}
+				return m.Connect(ctx)
+			}
+			if r.Provider != config.ProviderVCluster {
+				return cli.Exitf(cli.ExitUsage, "connect is only available for the minikube and vcluster providers (current: %s)", r.Provider)
+			}
 			// Without --force, leave an existing working connection untouched.
 			if !force && kubernetes.ContextExists(ctx, runner(app), app.Flags.Kubeconfig, r.KubeContext) && kubeFor(app, r).Healthz(ctx) {
 				app.IO.Errf("Already connected to vcluster %s (context %s); use --force to reconnect.\n", r.ClusterName, r.KubeContext)
@@ -283,7 +288,7 @@ func newConnectCmd(app *cli.App) *cobra.Command {
 			return v.Reconnect(ctx)
 		},
 	}
-	c.Flags().BoolVar(&force, "force", false, "Reconnect even if the context already exists")
+	c.Flags().BoolVar(&force, "force", false, "Force a vcluster reconnect even if the context already exists")
 	return c
 }
 
