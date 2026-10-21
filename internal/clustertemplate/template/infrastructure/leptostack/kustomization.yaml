@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - cert-manager.yaml
+  - trust-manager.yaml
+  - external-secrets.yaml
+  - crossplane.yaml
+  - operators.yaml
+  - infra-config.yaml
+  - rabbitmq.yaml
+  - keycloak-crd.yaml
+  - devworkspace-crd.yaml
