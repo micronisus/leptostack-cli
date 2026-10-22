@@ -9,6 +9,7 @@ spec:
   timeout: 10m
   dependsOn:
     - name: infra-config
+    - name: openbao-post
   sourceRef:
     kind: GitRepository
     name: leptostack-base
