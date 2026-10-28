@@ -54,6 +54,34 @@ func TestCreateLeptostackBaseSecretIncludesCA(t *testing.T) {
 	}
 }
 
+func TestCreateLeptostackBaseSecretIncludesBaseCA(t *testing.T) {
+	env := captureKubectl(t)
+	caFile := filepath.Join(t.TempDir(), "base-ca.pem")
+	if err := os.WriteFile(caFile, []byte("BASE-CA-PEM-CONTENT"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	r := baseSecretResolved("")
+	r.Base.CAFile = caFile
+	app, _, _ := newTestApp(t, "")
+	kube := kubernetes.New(execx.New(app.IO, 0), "leptostack-local", "", "")
+	if err := createLeptostackBaseSecret(context.Background(), app, r, kube); err != nil {
+		t.Fatal(err)
+	}
+	log, err := os.ReadFile(env.LogPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"caFile", "BASE-CA-PEM-CONTENT", "base-pat"} {
+		if !strings.Contains(string(log), want) {
+			t.Errorf("applied secret missing %q:\n%s", want, log)
+		}
+	}
+	if strings.Contains(string(log), "ca.crt") {
+		t.Errorf("ca.crt must be omitted when only the base CA is set:\n%s", log)
+	}
+}
+
 func TestCreateLeptostackBaseSecretOmitsCAWithoutFile(t *testing.T) {
 	env := captureKubectl(t)
 

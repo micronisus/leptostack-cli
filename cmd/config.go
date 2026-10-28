@@ -37,6 +37,7 @@ type initOptions struct {
 	basePAT              bool
 	baseURL              string
 	baseBranch           string
+	baseCAFile           string
 	registryRepo         string
 	registryStdin        bool
 	registryCreds        string
@@ -102,6 +103,7 @@ func newConfigInitCmd(app *cli.App) *cobra.Command {
 	_ = f.MarkHidden("resources-pat-stdin")
 	f.StringVar(&opts.baseURL, "base-url", "", "leptostack-base repository URL")
 	f.StringVar(&opts.baseBranch, "base-branch", "", "leptostack-base repository branch")
+	f.StringVar(&opts.baseCAFile, "base-ca-file", "", "Path to a PEM CA bundle for the leptostack-base repository")
 	f.StringVar(&opts.registryRepo, "registry-repository", "", "Container registry repository")
 	f.BoolVar(&opts.registryStdin, "registry-credentials-stdin", false, "Read registry credentials (user:pass) from stdin")
 	f.StringVar(&opts.registryCreds, "registry-credentials", "", "Registry credentials (user:pass)")
@@ -354,6 +356,13 @@ func runConfigInit(cmd *cobra.Command, app *cli.App, opts *initOptions) error {
 		if opts.baseBranch != "" {
 			b.Branch = opts.baseBranch
 		}
+	}
+	if opts.baseCAFile != "" {
+		caFile, err := resolveCAFile("--base-ca-file", opts.baseCAFile)
+		if err != nil {
+			return err
+		}
+		ensureClusterBase(cl).CAFile = caFile
 	}
 	if opts.registryRepo != "" {
 		ensureClusterRegistry(cl).Repository = opts.registryRepo

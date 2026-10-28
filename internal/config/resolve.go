@@ -86,6 +86,9 @@ func (c *Config) Resolve(name string) (*Resolved, error) {
 	if v := os.Getenv(EnvBaseBranch); v != "" {
 		r.Base.Branch = v
 	}
+	if v := os.Getenv(EnvBaseCAFile); v != "" {
+		r.Base.CAFile = v
+	}
 	if r.Base.PAT == "" {
 		r.Base.PAT = firstNonEmpty(os.Getenv(EnvBasePAT), os.Getenv(EnvResourcesPAT))
 	}

@@ -144,6 +144,15 @@ func createLeptostackBaseSecret(ctx context.Context, app *cli.App, r *config.Res
 		}
 		data["ca.crt"] = string(caBundle)
 	}
+	// A CA dedicated to the leptostack-base repository is stored under the
+	// caFile key in the same secret.
+	if r.Base.CAFile != "" {
+		caBundle, err := os.ReadFile(r.Base.CAFile)
+		if err != nil {
+			return cli.Exitf(cli.ExitFailure, "could not read the leptostack-base CA file %q: %v", r.Base.CAFile, err)
+		}
+		data["caFile"] = string(caBundle)
+	}
 	if _, err := kube.OutputCombined(ctx, "get", "secret", "leptostack-base", "-n", "flux-system"); err == nil {
 		app.IO.Errln("  Secret leptostack-base already exists, updating...")
 		_ = kube.RunDiscard(ctx, "delete", "secret", "leptostack-base", "-n", "flux-system")

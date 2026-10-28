@@ -81,6 +81,7 @@ func TestResolveEnvOverrides(t *testing.T) {
 	}
 	t.Setenv(EnvGitPAT, "from-env")
 	t.Setenv(EnvRegistryCredentials, "env:creds")
+	t.Setenv(EnvBaseCAFile, "/env-base-ca.pem")
 
 	r, err := cfg.Resolve("")
 	if err != nil {
@@ -91,6 +92,9 @@ func TestResolveEnvOverrides(t *testing.T) {
 	}
 	if r.Registry.Credentials != "env:creds" {
 		t.Errorf("registry env override failed: %q", r.Registry.Credentials)
+	}
+	if r.Base.CAFile != "/env-base-ca.pem" {
+		t.Errorf("base caFile env override failed: %q", r.Base.CAFile)
 	}
 	if r.Minikube.CPUs != 4 {
 		t.Errorf("cpus = %d", r.Minikube.CPUs)

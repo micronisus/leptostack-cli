@@ -42,6 +42,7 @@ const (
 	EnvClusterName         = "LEPTOSTACK_CLUSTER_NAME"
 	EnvBaseURL             = "LEPTOSTACK_BASE_URL"
 	EnvBaseBranch          = "LEPTOSTACK_BASE_BRANCH"
+	EnvBaseCAFile          = "LEPTOSTACK_BASE_CA_FILE"
 	EnvGitCAFile           = "LEPTOSTACK_GIT_CA_FILE"
 	EnvFluxCAFile          = "LEPTOSTACK_FLUX_CA_FILE"
 )

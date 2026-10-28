@@ -119,6 +119,10 @@ type Base struct {
 	URL    string `json:"url,omitempty"`
 	Branch string `json:"branch,omitempty"`
 	PAT    string `json:"pat,omitempty"`
+	// CAFile is the path to a PEM CA bundle for the leptostack-base
+	// repository. When set, its contents are stored in the leptostack-base
+	// Secret under the caFile key.
+	CAFile string `json:"caFile,omitempty"`
 }
 
 // Flux holds FluxCD bootstrap settings.

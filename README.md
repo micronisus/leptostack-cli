@@ -300,6 +300,17 @@ leptostack config init --repo-url https://git.example.com/me/my-gitops \
 leptostack config set flux.caFile /etc/pki/flux-ca.pem
 ```
 
+A CA dedicated to the leptostack-base repository can be configured with
+`base.caFile` via `--base-ca-file` (or `LEPTOSTACK_BASE_CA_FILE`). When set, its
+contents are added to the same `leptostack-base` Secret under the `caFile` key:
+
+```bash
+leptostack config init --repo-url https://git.example.com/me/my-gitops \
+  --base-ca-file /etc/pki/base-ca.pem
+
+leptostack config set base.caFile /etc/pki/base-ca.pem
+```
+
 Token minting is capability-aware, because the hosts differ:
 
 | Server | CLI | Repository | Push/pull token | Read-only token |
@@ -416,6 +427,7 @@ clusters:
       branch: main
       # pat: read-only token for the private leptostack-base repo; from
       # LEPTOSTACK_BASE_PAT (or RESOURCES_GIT_PAT) when absent
+      # caFile: /etc/pki/base-ca.pem   # PEM CA bundle for the leptostack-base repo
     flux:
       # caFile: /etc/pki/flux-ca.pem   # PEM CA bundle for flux bootstrap (overrides git.caFile)
   devops:

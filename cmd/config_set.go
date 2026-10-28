@@ -212,6 +212,12 @@ func setClusterValue(cfg *config.Config, key, value string) error {
 		ensureClusterBase(cl).Branch = value
 	case "base.pat":
 		ensureClusterBase(cl).PAT = value
+	case "base.caFile":
+		caFile, err := resolveCAFile("base.caFile", value)
+		if err != nil {
+			return err
+		}
+		ensureClusterBase(cl).CAFile = caFile
 	case "flux.caFile":
 		caFile, err := resolveCAFile("flux.caFile", value)
 		if err != nil {
