@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -53,6 +54,19 @@ func TestSetConfigValueExplicitClusterKey(t *testing.T) {
 	}
 	if cl.Git.CAFile != "/etc/pki/ca.pem" {
 		t.Errorf("clusters.dev.git.caFile = %q, want /etc/pki/ca.pem", cl.Git.CAFile)
+	}
+	fluxCA := filepath.Join(t.TempDir(), "flux-ca.pem")
+	if err := os.WriteFile(fluxCA, []byte("CA"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := setConfigValueIn(cfg, "", "clusters.dev.flux.caFile", fluxCA, false); err != nil {
+		t.Fatal(err)
+	}
+	if cl.Flux == nil || cl.Flux.CAFile != fluxCA {
+		t.Errorf("clusters.dev.flux.caFile = %+v, want %q", cl.Flux, fluxCA)
+	}
+	if err := setConfigValueIn(cfg, "", "clusters.dev.flux.caFile", "/does/not/exist.pem", false); err == nil {
+		t.Error("expected an error for an unreadable flux CA file")
 	}
 	if err := setConfigValueIn(cfg, "", "clusters.dev.git.server", "nope", false); err == nil {
 		t.Error("expected an error for an invalid git server")

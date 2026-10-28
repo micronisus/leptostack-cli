@@ -287,6 +287,19 @@ With a CA configured, `flux bootstrap` is run with `--ca-file`, and on
 PAT), so the base GitRepository trusts the server. No change to the
 GitRepository manifest is needed.
 
+To use a different CA bundle for the Flux bootstrap GitRepository than for the
+CLI's git operations, set `flux.caFile` with `--flux-ca-file` (or
+`LEPTOSTACK_FLUX_CA_FILE`). When set it overrides `git.caFile` for the
+`flux bootstrap --ca-file` argument only:
+
+```bash
+leptostack config init --repo-url https://git.example.com/me/my-gitops \
+  --git-ca-file /etc/pki/enterprise-ca.pem \
+  --flux-ca-file /etc/pki/flux-ca.pem
+
+leptostack config set flux.caFile /etc/pki/flux-ca.pem
+```
+
 Token minting is capability-aware, because the hosts differ:
 
 | Server | CLI | Repository | Push/pull token | Read-only token |
@@ -403,6 +416,8 @@ clusters:
       branch: main
       # pat: read-only token for the private leptostack-base repo; from
       # LEPTOSTACK_BASE_PAT (or RESOURCES_GIT_PAT) when absent
+    flux:
+      # caFile: /etc/pki/flux-ca.pem   # PEM CA bundle for flux bootstrap (overrides git.caFile)
   devops:
     provider: vcluster
     clusterName: devops
@@ -423,7 +438,7 @@ preferences:
 
 - **Required keys and enums are validated.** Invalid config fails fast with exit
   code 3 and a message naming the exact key path.
-- **`git`, `registry` and `base` are cluster-scoped.** There are no global
+- **`git`, `registry`, `base` and `flux` are cluster-scoped.** There are no global
   sections. `config set`/`config unset` write these to the selected cluster: with
   `-c/--cluster` the value targets that cluster, otherwise the current-context
   cluster, so `leptostack -c local config set base.pat <token> --secret` updates

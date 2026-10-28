@@ -103,6 +103,49 @@ func TestResolveEnvOverrides(t *testing.T) {
 	}
 }
 
+func TestResolveFluxCAFile(t *testing.T) {
+	cfg := &Config{
+		Clusters: map[string]*Cluster{"local": {
+			Provider: ProviderMinikube,
+			Git:      &Git{CAFile: "/git-ca.pem"},
+			Flux:     &Flux{CAFile: "/flux-ca.pem"},
+		}},
+	}
+
+	r, err := cfg.Resolve("local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Flux.CAFile != "/flux-ca.pem" {
+		t.Errorf("flux caFile = %q, want /flux-ca.pem", r.Flux.CAFile)
+	}
+	if got := r.BootstrapCAFile(); got != "/flux-ca.pem" {
+		t.Errorf("bootstrap CA = %q, want the flux caFile", got)
+	}
+
+	t.Setenv(EnvFluxCAFile, "/env-flux-ca.pem")
+	r, err = cfg.Resolve("local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Flux.CAFile != "/env-flux-ca.pem" {
+		t.Errorf("flux caFile env override failed: %q", r.Flux.CAFile)
+	}
+	if got := r.BootstrapCAFile(); got != "/env-flux-ca.pem" {
+		t.Errorf("bootstrap CA = %q, want the env override", got)
+	}
+}
+
+func TestBootstrapCAFileFallsBackToGit(t *testing.T) {
+	r := &Resolved{Git: Git{CAFile: "/git-ca.pem"}}
+	if got := r.BootstrapCAFile(); got != "/git-ca.pem" {
+		t.Errorf("bootstrap CA = %q, want the git caFile fallback", got)
+	}
+	if got := (&Resolved{}).BootstrapCAFile(); got != "" {
+		t.Errorf("bootstrap CA = %q, want empty when unset", got)
+	}
+}
+
 func TestValidateRejectsBadProvider(t *testing.T) {
 	cfg := &Config{APIVersion: APIVersion, Kind: Kind, Clusters: map[string]*Cluster{"x": {Provider: "docker"}}}
 	err := cfg.Validate()

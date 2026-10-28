@@ -49,6 +49,7 @@ type Cluster struct {
 	Git            *Git      `json:"git,omitempty"`
 	Registry       *Registry `json:"registry,omitempty"`
 	Base           *Base     `json:"base,omitempty"`
+	Flux           *Flux     `json:"flux,omitempty"`
 }
 
 // Minikube holds minikube-specific settings.
@@ -120,6 +121,14 @@ type Base struct {
 	PAT    string `json:"pat,omitempty"`
 }
 
+// Flux holds FluxCD bootstrap settings.
+type Flux struct {
+	// CAFile is the path to a PEM CA bundle passed to `flux bootstrap` as
+	// --ca-file, so the GitRepository it creates trusts a private (enterprise)
+	// CA. When unset, git.caFile is used.
+	CAFile string `json:"caFile,omitempty"`
+}
+
 // Preferences holds user preferences.
 type Preferences struct {
 	AutoUpgradeCheck *bool `json:"autoUpgradeCheck,omitempty"`
@@ -139,12 +148,22 @@ type Resolved struct {
 	Git             Git
 	Registry        Registry
 	Base            Base
+	Flux            Flux
 	MinikubeProfile string
 	KubeContext     string
 	HostNamespace   string
 	// AutoRepo is true when the GitOps repository is the "auto" sentinel and
 	// has not yet been materialized by the forge on start.
 	AutoRepo bool
+}
+
+// BootstrapCAFile returns the CA bundle passed to `flux bootstrap --ca-file`:
+// flux.caFile when set, otherwise the shared git.caFile.
+func (r *Resolved) BootstrapCAFile() string {
+	if r.Flux.CAFile != "" {
+		return r.Flux.CAFile
+	}
+	return r.Git.CAFile
 }
 
 // Clone returns a deep copy of the config.
@@ -190,6 +209,10 @@ func (cl *Cluster) clone() *Cluster {
 	if cl.Base != nil {
 		b := *cl.Base
 		out.Base = &b
+	}
+	if cl.Flux != nil {
+		f := *cl.Flux
+		out.Flux = &f
 	}
 	return &out
 }

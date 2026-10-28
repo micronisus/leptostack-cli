@@ -279,6 +279,9 @@ func (c *Config) ApplyDefaults() {
 		if cl.Base != nil && *cl.Base == (Base{}) {
 			cl.Base = nil
 		}
+		if cl.Flux != nil && *cl.Flux == (Flux{}) {
+			cl.Flux = nil
+		}
 	}
 }
 

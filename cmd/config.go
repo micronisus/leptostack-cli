@@ -33,6 +33,7 @@ type initOptions struct {
 	gitPATStdin          bool
 	gitPAT               string
 	gitCAFile            string
+	fluxCAFile           string
 	basePAT              bool
 	baseURL              string
 	baseBranch           string
@@ -95,6 +96,7 @@ func newConfigInitCmd(app *cli.App) *cobra.Command {
 	f.BoolVar(&opts.gitPATStdin, "git-pat-stdin", false, "Read the Git PAT from stdin")
 	f.StringVar(&opts.gitPAT, "git-pat", "", "Git PAT (prefer --git-pat-stdin or LEPTOSTACK_GIT_PAT)")
 	f.StringVar(&opts.gitCAFile, "git-ca-file", "", "Path to a PEM CA bundle for the GitOps and leptostack-base git servers (enterprise CA)")
+	f.StringVar(&opts.fluxCAFile, "flux-ca-file", "", "Path to a PEM CA bundle for flux bootstrap (overrides --git-ca-file for bootstrap)")
 	f.BoolVar(&opts.basePAT, "base-pat-stdin", false, "Read the leptostack-base PAT from stdin")
 	f.BoolVar(&opts.basePAT, "resources-pat-stdin", false, "Deprecated alias for --base-pat-stdin")
 	_ = f.MarkHidden("resources-pat-stdin")
@@ -291,14 +293,18 @@ func runConfigInit(cmd *cobra.Command, app *cli.App, opts *initOptions) error {
 	git.ClusterPath = orString(opts.clusterPath, orString(git.ClusterPath, "clusters/"+cl.ClusterName))
 
 	if opts.gitCAFile != "" {
-		caFile, err := filepath.Abs(opts.gitCAFile)
+		caFile, err := resolveCAFile("--git-ca-file", opts.gitCAFile)
 		if err != nil {
-			return cli.Exitf(cli.ExitUsage, "could not resolve --git-ca-file %q: %v", opts.gitCAFile, err)
-		}
-		if _, err := os.ReadFile(caFile); err != nil {
-			return cli.Exitf(cli.ExitUsage, "could not read --git-ca-file %q: %v", caFile, err)
+			return err
 		}
 		git.CAFile = caFile
+	}
+	if opts.fluxCAFile != "" {
+		caFile, err := resolveCAFile("--flux-ca-file", opts.fluxCAFile)
+		if err != nil {
+			return err
+		}
+		ensureClusterFlux(cl).CAFile = caFile
 	}
 
 	// Secrets. When a concrete repository is configured (not auto), a PAT is
@@ -556,6 +562,19 @@ func validateProvider(p string) error {
 		return nil
 	}
 	return cli.Exitf(cli.ExitUsage, "invalid provider %q (expected minikube or vcluster)", p)
+}
+
+// resolveCAFile turns a CA bundle option into an absolute path and verifies
+// that it is readable.
+func resolveCAFile(flag, path string) (string, error) {
+	caFile, err := filepath.Abs(path)
+	if err != nil {
+		return "", cli.Exitf(cli.ExitUsage, "could not resolve %s %q: %v", flag, path, err)
+	}
+	if _, err := os.ReadFile(caFile); err != nil {
+		return "", cli.Exitf(cli.ExitUsage, "could not read %s %q: %v", flag, caFile, err)
+	}
+	return caFile, nil
 }
 
 func validateGitServer(s string) error {

@@ -43,6 +43,7 @@ const (
 	EnvBaseURL             = "LEPTOSTACK_BASE_URL"
 	EnvBaseBranch          = "LEPTOSTACK_BASE_BRANCH"
 	EnvGitCAFile           = "LEPTOSTACK_GIT_CA_FILE"
+	EnvFluxCAFile          = "LEPTOSTACK_FLUX_CA_FILE"
 )
 
 // HomeDir returns the user's home directory, or "." if undeterminable.

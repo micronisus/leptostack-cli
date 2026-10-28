@@ -45,7 +45,7 @@ func parseVClusterServiceType(value string) (string, error) {
 // scopedSections are the cluster sections that may also be written with their
 // short, unqualified key (for example `base.pat`), targeting the selected
 // cluster. They are cluster-scoped only; there are no global sections.
-var scopedSections = []string{"git.", "registry.", "base."}
+var scopedSections = []string{"git.", "registry.", "base.", "flux."}
 
 // isScopedSectionKey reports whether key addresses a cluster-scoped section.
 func isScopedSectionKey(key string) bool {
@@ -212,6 +212,12 @@ func setClusterValue(cfg *config.Config, key, value string) error {
 		ensureClusterBase(cl).Branch = value
 	case "base.pat":
 		ensureClusterBase(cl).PAT = value
+	case "flux.caFile":
+		caFile, err := resolveCAFile("flux.caFile", value)
+		if err != nil {
+			return err
+		}
+		ensureClusterFlux(cl).CAFile = caFile
 	default:
 		return cli.Exitf(cli.ExitUsage, "unknown configuration key %q", key)
 	}
@@ -313,6 +319,13 @@ func ensureClusterBase(cl *config.Cluster) *config.Base {
 		cl.Base = &config.Base{}
 	}
 	return cl.Base
+}
+
+func ensureClusterFlux(cl *config.Cluster) *config.Flux {
+	if cl.Flux == nil {
+		cl.Flux = &config.Flux{}
+	}
+	return cl.Flux
 }
 
 func ensureVCluster(cl *config.Cluster) *config.VCluster {

@@ -255,7 +255,7 @@ func (m *Manager) RunBootstrap(ctx context.Context, resync bool) error {
 	}
 	g := m.Resolved.Git
 	m.IO.Errf("Running flux bootstrap for %s...\n\n", g.Server)
-	if err := m.Flux.Bootstrap(ctx, g.Server, g.PAT, m.gitHost(), g.Owner, g.Repository, g.Branch, m.Resolved.ClonePath(), g.CAFile); err != nil {
+	if err := m.Flux.Bootstrap(ctx, g.Server, g.PAT, m.gitHost(), g.Owner, g.Repository, g.Branch, m.Resolved.ClonePath(), m.Resolved.BootstrapCAFile()); err != nil {
 		return err
 	}
 	m.IO.Errln("\nFlux bootstrap has been started.\nYou can check the status of the deployment by running:\n  flux get kustomizations")

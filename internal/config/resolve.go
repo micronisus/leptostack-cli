@@ -96,6 +96,14 @@ func (c *Config) Resolve(name string) (*Resolved, error) {
 		r.Base.Branch = DefaultBaseBranch
 	}
 
+	// Flux bootstrap.
+	if cl.Flux != nil {
+		r.Flux = *cl.Flux
+	}
+	if v := os.Getenv(EnvFluxCAFile); v != "" {
+		r.Flux.CAFile = v
+	}
+
 	// Derived names.
 	r.MinikubeProfile = "leptostack-" + r.ClusterName
 	r.HostNamespace = r.VCluster.HostNamespace
