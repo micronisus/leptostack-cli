@@ -44,6 +44,31 @@ func testManager(r *config.Resolved, runner *execx.Runner) *Manager {
 	}
 }
 
+func TestFluxTemplatePathsCoverEveryAppGroup(t *testing.T) {
+	dir := t.TempDir()
+	if err := clustertemplate.Extract(dir); err != nil {
+		t.Fatal(err)
+	}
+	for _, group := range AppGroups {
+		want := "apps/" + group + "/base"
+		found := false
+		for _, p := range FluxTemplatePaths {
+			if p == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("FluxTemplatePaths is missing %s", want)
+		}
+	}
+	for _, p := range FluxTemplatePaths {
+		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(p))); err != nil {
+			t.Errorf("%s: %v", p, err)
+		}
+	}
+}
+
 func TestRewriteBaseSource(t *testing.T) {
 	const content = `apiVersion: source.toolkit.fluxcd.io/v1
 kind: GitRepository
@@ -136,6 +161,15 @@ func TestEmbeddedTemplateProducesClusterRepo(t *testing.T) {
 	}
 	if !strings.Contains(string(overlay), "namePrefix: devops-") {
 		t.Fatalf("overlay namePrefix not rewritten:\n%s", overlay)
+	}
+	for _, group := range []string{"devops", "ai"} {
+		overlay, err := os.ReadFile(filepath.Join(repoDir, "apps", group, "overlays", "devops", "kustomization.yaml"))
+		if err != nil {
+			t.Fatalf("%s cluster overlay not created from the embedded template: %v", group, err)
+		}
+		if !strings.Contains(string(overlay), "namePrefix: devops-") {
+			t.Fatalf("%s overlay namePrefix not rewritten:\n%s", group, overlay)
+		}
 	}
 	ck, _ := os.ReadFile(clusterKust)
 	if !strings.Contains(string(ck), "overlays/devops") || strings.Contains(string(ck), "example") {

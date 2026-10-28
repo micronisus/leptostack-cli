@@ -18,11 +18,23 @@ import (
 	"github.com/micronisus/leptostack-cli/internal/flux"
 )
 
-// FluxTemplatePaths are the template paths refreshed by `sync flux`.
-var FluxTemplatePaths = []string{
-	"apps/devops/base",
-	"apps/leptostack/base",
-	"infrastructure/leptostack-infra.yaml",
+// AppGroups are the app trees under apps/ that the CLI lays out per cluster.
+var AppGroups = []string{
+	"leptostack",
+	"devops",
+	"ai",
+}
+
+// FluxTemplatePaths are the template paths refreshed by `sync flux`. Every app
+// group's base tree is refreshed alongside the shared infrastructure manifest.
+var FluxTemplatePaths = append(fluxBasePaths(), "infrastructure/leptostack")
+
+func fluxBasePaths() []string {
+	paths := make([]string, 0, len(AppGroups))
+	for _, group := range AppGroups {
+		paths = append(paths, "apps/"+group+"/base")
+	}
+	return paths
 }
 
 // Manager runs GitOps workflows for a resolved cluster.

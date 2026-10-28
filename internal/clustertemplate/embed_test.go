@@ -19,6 +19,8 @@ func TestExtract(t *testing.T) {
 		"infrastructure/leptostack-source.yaml",
 		"apps/leptostack/base/kustomization.yaml",
 		"apps/leptostack/overlays/example/kustomization.yaml",
+		"apps/ai/base/kustomization.yaml",
+		"apps/ai/overlays/example/kustomization.yaml",
 	}
 	for _, rel := range files {
 		p := filepath.Join(dir, filepath.FromSlash(rel))

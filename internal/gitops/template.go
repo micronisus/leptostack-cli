@@ -104,6 +104,43 @@ func hasInternalCADelete(content string) bool {
 	return false
 }
 
+// generateAppOverlay copies apps/<group>/overlays/example to
+// apps/<group>/overlays/<clusterName> when the template provides it and sets the
+// cluster-specific namePrefix. Groups without an example overlay are skipped.
+func (m *Manager) generateAppOverlay(repoDir, group, clusterName string) error {
+	exampleOverlay := filepath.Join(repoDir, "apps", group, "overlays", "example")
+	if !fileExists(filepath.Join(exampleOverlay, "kustomization.yaml")) {
+		return nil
+	}
+
+	overlayDir := filepath.Join(repoDir, "apps", group, "overlays", clusterName)
+	m.IO.Errf("Creating cluster overlay at apps/%s/overlays/%s from the embedded template's example overlay...\n", group, clusterName)
+	if err := os.MkdirAll(overlayDir, 0o755); err != nil {
+		return err
+	}
+	for _, f := range []string{"naming-conf.yaml", "kustomization.yaml"} {
+		src := filepath.Join(exampleOverlay, f)
+		if !fileExists(src) {
+			continue
+		}
+		if err := copyPath(src, filepath.Join(overlayDir, f)); err != nil {
+			return err
+		}
+	}
+	if fileExists(filepath.Join(exampleOverlay, "module-core-images.yaml")) {
+		dst := filepath.Join(overlayDir, "module-core-images.yaml")
+		if err := copyPath(filepath.Join(exampleOverlay, "module-core-images.yaml"), dst); err != nil {
+			return err
+		}
+		if err := replaceInFile(dst, "example-", clusterName+"-"); err != nil {
+			return err
+		}
+		m.IO.Errf("  Copied module-core-images.yaml and rewrote example- references to %s-.\n", clusterName)
+	}
+
+	return replaceLinePrefix(filepath.Join(overlayDir, "kustomization.yaml"), "namePrefix:", "namePrefix: "+clusterName+"-")
+}
+
 func (m *Manager) generateClusterConfig(ctx context.Context, repoDir string) error {
 	r := m.Resolved
 	clusterName := r.ClusterName
@@ -145,35 +182,16 @@ func (m *Manager) generateClusterConfig(ctx context.Context, repoDir string) err
 		m.IO.Errln("Skipping infrastructure/cluster-config.yaml (registry ingress is not required for vcluster).")
 	}
 
-	overlayDir := filepath.Join(repoDir, "apps", "leptostack", "overlays", clusterName)
-	exampleOverlay := filepath.Join(repoDir, "apps", "leptostack", "overlays", "example")
-	if !fileExists(filepath.Join(exampleOverlay, "kustomization.yaml")) {
-		return fmt.Errorf("could not find apps/leptostack/overlays/example/kustomization.yaml in the embedded template")
+	for _, group := range AppGroups {
+		if err := m.generateAppOverlay(repoDir, group, clusterName); err != nil {
+			return err
+		}
 	}
 
-	m.IO.Errf("Creating cluster overlay at apps/leptostack/overlays/%s from the embedded template's example overlay...\n", clusterName)
-	if err := os.MkdirAll(overlayDir, 0o755); err != nil {
-		return err
-	}
-	for _, f := range []string{"naming-conf.yaml", "kustomization.yaml"} {
-		if err := copyPath(filepath.Join(exampleOverlay, f), filepath.Join(overlayDir, f)); err != nil {
-			return err
-		}
-	}
-	if fileExists(filepath.Join(exampleOverlay, "module-core-images.yaml")) {
-		dst := filepath.Join(overlayDir, "module-core-images.yaml")
-		if err := copyPath(filepath.Join(exampleOverlay, "module-core-images.yaml"), dst); err != nil {
-			return err
-		}
-		if err := replaceInFile(dst, "example-", clusterName+"-"); err != nil {
-			return err
-		}
-		m.IO.Errf("  Copied module-core-images.yaml and rewrote example- references to %s-.\n", clusterName)
-	}
-
-	overlayKust := filepath.Join(overlayDir, "kustomization.yaml")
-	if err := replaceLinePrefix(overlayKust, "namePrefix:", "namePrefix: "+clusterName+"-"); err != nil {
-		return err
+	overlayKust := filepath.Join(repoDir, "apps", "leptostack", "overlays", clusterName, "kustomization.yaml")
+	if !fileExists(overlayKust) {
+		m.IO.Errln("Skipping the leptostack overlay patches (no example overlay in the embedded template).")
+		return nil
 	}
 
 	overlayContent, err := os.ReadFile(overlayKust)

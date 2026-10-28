@@ -23,6 +23,8 @@ func TestGenerateFluxCDNoConfig(t *testing.T) {
 		"clusters/example/kustomization.yaml",
 		"infrastructure/kustomization.yaml",
 		"apps/leptostack/base/kustomization.yaml",
+		"apps/ai/base/kustomization.yaml",
+		"apps/ai/overlays/example/kustomization.yaml",
 	} {
 		if _, err := os.Stat(filepath.Join(dst, filepath.FromSlash(rel))); err != nil {
 			t.Errorf("%s: %v", rel, err)
