@@ -3,7 +3,6 @@ kind: Kustomization
 
 resources:
   - che.yaml
-  - litellm.yaml
   - harbor.yaml
   - forgejo.yaml
   - penpot.yaml

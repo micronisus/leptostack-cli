@@ -13,6 +13,7 @@ spec:
     - name: apisix-internal
     - name: openbao-post
     - name: keycloak-post
+    - name: searxng
   sourceRef:
     kind: GitRepository
     name: leptostack-base
