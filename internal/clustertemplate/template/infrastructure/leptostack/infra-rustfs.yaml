@@ -1,0 +1,104 @@
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: infra-rustfs-pre
+  namespace: flux-system
+spec:
+  interval: 720m0s
+  timeout: 10m
+  dependsOn:
+    - name: infra-keycloak-post
+    - name: infra-openbao-post
+  sourceRef:
+    kind: GitRepository
+    name: leptostack-base
+  path: ./leptostack/rustfs/pre
+  prune: true
+  wait: true
+  patches:
+    - target:
+        group: generators.external-secrets.io
+        kind: ClusterGenerator
+        version: v1alpha1
+        name: rustfs-access-key-generator
+      patch: |-
+        - op: replace
+          path: /metadata/name
+          value: infra-rustfs-access-key-generator
+    - target:
+        group: generators.external-secrets.io
+        kind: ClusterGenerator
+        version: v1alpha1
+        name: rustfs-secret-key-generator
+      patch: |-
+        - op: replace
+          path: /metadata/name
+          value: infra-rustfs-secret-key-generator
+    - target:
+        group: external-secrets.io
+        kind: PushSecret
+        version: v1alpha1
+        name: rustfs-credentials
+      patch: |-
+        - op: replace
+          path: /spec/selector/generatorRef/name
+          value: infra-rustfs-access-key-generator
+    - target:
+        group: external-secrets.io
+        kind: PushSecret
+        version: v1alpha1
+        name: rustfs-credentials-secret-key
+      patch: |-
+        - op: replace
+          path: /spec/selector/generatorRef/name
+          value: infra-rustfs-secret-key-generator
+  postBuild:
+    substitute:
+      cluster_name: infra
+      sso_hostname: infra-sso
+      objectstore_hostname: infra-objectstore
+      objectstore_internal_hostname: infra-rustfs
+    substituteFrom:
+      - kind: ConfigMap
+        name: leptostack-config
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: infra-rustfs
+  namespace: flux-system
+spec:
+  interval: 720m0s
+  timeout: 10m
+  dependsOn:
+    - name: infra-rustfs-pre
+    - name: infra-apisix-post
+    - name: infra-apisix-internal-post
+  sourceRef:
+    kind: GitRepository
+    name: leptostack-base
+  path: ./leptostack/rustfs
+  prune: true
+  wait: true
+  patches:
+    - target:
+        group: tf.upbound.io
+        kind: ProviderConfig
+        version: v1beta1
+        name: rustfs
+      patch: |-
+        - op: replace
+          path: /metadata/name
+          value: rustfs-infra
+  postBuild:
+    substitute:
+      cluster_name: infra
+      sso_hostname: infra-sso
+      objectstore_hostname: infra-objectstore
+      objectstore_internal_hostname: infra-rustfs
+      rustfs_storage_size: 10Gi
+      rustfs_log_storage_size: 1Gi
+    substituteFrom:
+      - kind: ConfigMap
+        name: leptostack-config

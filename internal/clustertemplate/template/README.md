@@ -9,22 +9,27 @@ The repository uses a **Kustomize base/overlay layout**. The `base` defines the 
 ```
 .
 ├── infrastructure/                      # Shared infrastructure operators (source + Kustomizations)
-│   ├── kustomization.yaml               # Groups leptostack-source and leptostack-infra
+│   ├── kustomization.yaml               # Groups leptostack-source and leptostack/
 │   ├── leptostack-source.yaml           # GitRepository source pointing to leptostack-base
-│   └── leptostack-infra.yaml            # Infra Kustomizations (cert-manager, operators, etc.)
+│   └── leptostack/                      # Infra Kustomizations (cert-manager, operators, etc.)
+│       ├── kustomization.yaml
+│       ├── infra-config.yaml            # Internal CA bundle, image catalogs, Helm repositories
+│       ├── infra-*.yaml                 # Dedicated infra-segment services (see below)
+│       └── keycloak-crd.yaml            # Cluster-wide Keycloak operator RBAC + CRDs
 ├── apps/
 │   └── leptostack/
 │       ├── base/                        # Default LeptoStack definitions — DO NOT MODIFY
 │       │   ├── kustomization.yaml
 │       │   ├── leptostack-config.yaml   # Default ConfigMap with placeholder values
-│       │   └── leptostack-base.yaml     # All core service Kustomizations and dependency chain
+│       │   └── *.yaml                   # Core service Kustomizations and dependency chain
 │       └── overlays/
 │           └── example/                 # Example overlay; copy for your own cluster
 │               ├── kustomization.yaml   # namePrefix, naming config, references base
 │               └── naming-conf.yaml     # Rewrites substituteFrom/dependsOn names under prefix
 └── clusters/
     └── example/                         # One directory per cluster, bootstrapped by Flux
-        └── kustomization.yaml           # References infrastructure + your overlay
+        ├── kustomization.yaml           # References infrastructure + your overlay
+        └── naming-conf.yaml             # Rewrites infra substituteFrom names to the cluster prefix
 ```
 
 ## Getting Started
@@ -93,10 +98,17 @@ mkdir -p clusters/<cluster-name>
 ```yaml
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
+
+configurations:
+  - naming-conf.yaml
+
 resources:
   - ../../infrastructure
   - ../../apps/leptostack/overlays/<cluster-name>
 ```
+
+The cluster-level `naming-conf.yaml` rewrites the infra-segment Kustomizations'
+`substituteFrom` references to your overlay's prefixed `leptostack-config` ConfigMap.
 
 ### 5. Bootstrap FluxCD
 
@@ -158,7 +170,18 @@ FluxCD manages dependencies between components. The deployment follows this orde
 Infrastructure (cert-manager → trust-manager, crossplane → crossplane-post, operators, external-secrets)
     │
     ├──► infra-config      (waits on all infra)
-    └──► keycloak-crd
+    ├──► keycloak-crd
+    │
+    ├──► infra-apisix → infra-apisix-post
+    ├──► infra-apisix-internal → infra-apisix-internal-post
+    ├──► infra-openbao → infra-openbao-init → infra-openbao-post
+    ├──► infra-pgcluster-pre (after infra-openbao-init) → infra-pgcluster (after infra-openbao-post)
+    ├──► infra-keycloak-pre (after infra-pgcluster, keycloak-crd)
+    │         → infra-keycloak (after infra-apisix-post) → infra-keycloak-post
+    ├──► infra-openbao-oidc-client (after infra-openbao-post, infra-keycloak-post)
+    │         → infra-openbao-oidc
+    └──► infra-rustfs-pre (after infra-keycloak-post, infra-openbao-post)
+              → infra-rustfs (after infra-apisix-post, infra-apisix-internal-post)
     │
     ▼
   base (overlay)
@@ -167,7 +190,7 @@ Infrastructure (cert-manager → trust-manager, crossplane → crossplane-post, 
     ├──► apisix → apisix-post
     ├──► centrifugo        (after apisix)
     ├──► camel-k
-    ├──► rustfs
+    ├──► rustfs            (after rustfs-pre → keycloak-post, openbao-post)
     ├──► openbao → openbao-init → openbao-post
     │
     ├──► pgcluster         (after openbao-post)
@@ -181,11 +204,36 @@ Infrastructure (cert-manager → trust-manager, crossplane → crossplane-post, 
     └──► (modules, if enabled)
 ```
 
+## Infrastructure Segment
+
+The template also deploys a second, infrastructure-owned copy of PostgreSQL, OpenBao, Keycloak and RustFS. It lives in `infrastructure/leptostack/infra-*.yaml`, reuses the `leptostack-base` manifests with a static `postBuild.substitute` (`cluster_name: infra`), and is intended for platform-level services that must not share the application segment's credentials, database or object storage. The cluster-level `naming-conf.yaml` points their `substituteFrom` at the overlay's prefixed `leptostack-config` ConfigMap so they still receive `leptostack_domain`.
+
+| Instance | Namespace | Flux Kustomizations | Hostnames |
+|---|---|---|---|
+| Keycloak | `infra-keycloak` | `infra-keycloak-pre`, `infra-keycloak`, `infra-keycloak-post` | `infra-sso.<domain>`, `infra-sso-admin.<domain>` |
+| PostgreSQL | `infra-pgcluster` | `infra-pgcluster-pre`, `infra-pgcluster` | `infra-pgpooler.infra-pgcluster.svc.cluster.local` |
+| OpenBao | `infra-openbao` | `infra-openbao`, `infra-openbao-init`, `infra-openbao-post`, `infra-openbao-oidc-client`, `infra-openbao-oidc` | `infra-openbao-openbao.infra-openbao.svc.cluster.local:8200` |
+| RustFS | `infra-rustfs` | `infra-rustfs-pre`, `infra-rustfs` | `infra-objectstore.<domain>`, `infra-rustfs.api.infra.internal` |
+| APISIX (public) | `ingress-infra` | `infra-apisix`, `infra-apisix-post` | `infra-sso.<domain>`, `infra-sso-admin.<domain>`, `infra-objectstore.<domain>` |
+| APISIX (internal) | `ingress-infra-internal` | `infra-apisix-internal`, `infra-apisix-internal-post` | `*.api.infra.internal` |
+
+Notes:
+
+- The infra segment has its own APISIX gateways, ingress classes (`infra-apisix`, `infra-internal-apisix`) and TLS certificates. The public infra gateway is a separate `LoadBalancer` and therefore receives its own IP; the wildcard DNS record that points `<domain>` at the application APISIX does **not** reach it. Add explicit DNS records for `infra-sso.<domain>`, `infra-sso-admin.<domain>` and `infra-objectstore.<domain>` pointing at the infra gateway's external IP.
+- `*.api.infra.internal` is resolved to the infra internal gateway. On minikube the CLI adds the matching CoreDNS rewrite to `infrastructure/cluster-config.yaml`; clusters managed elsewhere need an equivalent rewrite (or a wildcard DNS entry) for in-cluster S3 access.
+- The CLI `port-forward` catalog covers the application segment only. Reach the infra instances with `kubectl port-forward`, for example `kubectl -n infra-openbao port-forward svc/infra-openbao-openbao 8200:8200`, `kubectl -n infra-pgcluster port-forward svc/infra-pgcluster-rw 5432:5432`, and `kubectl -n infra-rustfs port-forward svc/rustfs-svc 9000:9000`.
+- `infra-rustfs` intentionally does **not** link `./leptostack/rustfs/post`: that path creates the cluster-wide `flux-system/fluxcd-s3` secret and `Bucket/fluxcd` source, which the application RustFS instance already owns.
+- The infra Keycloak realm is named `infra` and its realm administrator is `infra-admin`; the bootstrap admin credentials come from the `keycloak-admin` secret in `infra-keycloak`. Retrieve the `infra-admin` password from its secret in `infra-keycloak` or from OpenBao.
+- The infra realm reuses the application greenmail SMTP host (`smtp.greenmail.svc.cluster.local`). Greenmail's network policy only admits `leptostack-<cluster>` namespaces, so add `leptostack-infra` to that policy if infra Keycloak email delivery is required.
+- The static `infra` prefix must not collide with the cluster name itself. If a cluster is literally named `infra`, change the substitution prefix in `infrastructure/leptostack/infra-*.yaml` consistently.
+- Existing cluster repositories refreshed with `sync flux` receive the new `infrastructure/leptostack/infra-*.yaml` files automatically. The matching `clusters/<cluster>/kustomization.yaml` changes (`configurations: naming-conf.yaml` plus the `infra-keycloak` operator subject and the `leptostack-infra` CA-bundle selector) and the `clusters/<cluster>/naming-conf.yaml` file are not refreshed by `sync flux` and must be added manually. Without the name reference, the infra Kustomizations cannot resolve the cluster-prefixed `leptostack-config` ConfigMap.
+
 ## Key Files
 
 - **`infrastructure/leptostack-source.yaml`** — Defines the `leptostack-base` GitRepository source. Update the URL if you use a fork.
-- **`infrastructure/leptostack-infra.yaml`** — Deploys shared infrastructure operators (cert-manager, trust-manager, external-secrets, crossplane, operators, keycloak CRDs) from the `leptostack-base` repository. Generally does not need modification.
+- **`infrastructure/leptostack/`** — Deploys shared infrastructure operators (cert-manager, trust-manager, external-secrets, crossplane, operators, keycloak CRDs) and the dedicated `infra-*.yaml` infrastructure segment from the `leptostack-base` repository. Generally does not need modification.
 - **`apps/leptostack/base/leptostack-config.yaml`** — Default cluster configuration as a ConfigMap. Contains placeholder values only; do not modify. Override via overlay patches.
-- **`apps/leptostack/base/leptostack-base.yaml`** — Defines all core LeptoStack service Kustomizations and their dependency chain. Do not modify.
+- **`apps/leptostack/base/*.yaml`** — Define all core LeptoStack service Kustomizations and their dependency chain. Do not modify.
 - **`apps/leptostack/overlays/<cluster>/`** — The primary place to customize. Add your cluster-specific config patches and `namePrefix` here.
-- **`clusters/<cluster>/kustomization.yaml`** — Ties infrastructure and your overlay together; this directory is the Flux bootstrap path.
+- **`clusters/<cluster>/naming-conf.yaml`** — Cluster-level name references that point the infra Kustomizations at the overlay's prefixed `leptostack-config` ConfigMap.
+- **`clusters/<cluster>/kustomization.yaml`** — Ties infrastructure and your overlay together; this directory is the Flux bootstrap path. It also adds the `infra-keycloak` operator ServiceAccount to the `keycloak-crd` ClusterRoleBinding, includes `leptostack-infra` in the internal CA bundle namespace selector, and loads `naming-conf.yaml`.

@@ -175,6 +175,24 @@ func TestEmbeddedTemplateProducesClusterRepo(t *testing.T) {
 	if !strings.Contains(string(ck), "overlays/devops") || strings.Contains(string(ck), "example") {
 		t.Fatalf("cluster kustomization references not rewritten:\n%s", ck)
 	}
+	if !strings.Contains(string(ck), "leptostack-infra") || !strings.Contains(string(ck), "infra-keycloak") {
+		t.Fatalf("cluster kustomization must keep the static infra references:\n%s", ck)
+	}
+	if !strings.Contains(string(ck), "naming-conf.yaml") {
+		t.Fatalf("cluster kustomization must configure the cluster-level nameReference:\n%s", ck)
+	}
+	if _, err := os.Stat(filepath.Join(clusterDir, "naming-conf.yaml")); err != nil {
+		t.Fatalf("generated cluster directory is missing naming-conf.yaml: %v", err)
+	}
+	infraKust, err := os.ReadFile(filepath.Join(repoDir, "infrastructure", "leptostack", "kustomization.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"infra-apisix.yaml", "infra-openbao.yaml", "infra-pgcluster.yaml", "infra-keycloak.yaml", "infra-rustfs.yaml"} {
+		if !strings.Contains(string(infraKust), f) {
+			t.Errorf("generated infrastructure/leptostack kustomization is missing %s:\n%s", f, infraKust)
+		}
+	}
 	src, _ := os.ReadFile(filepath.Join(repoDir, "infrastructure", "leptostack-source.yaml"))
 	if !strings.Contains(string(src), "url: https://git.example.com/team/base.git") || !strings.Contains(string(src), "branch: release") {
 		t.Fatalf("base source not rewritten from base.*:\n%s", src)
@@ -226,6 +244,9 @@ func TestGenerateClusterConfigMinikubeCreatesRegistryIngress(t *testing.T) {
 	if !strings.Contains(string(cfg), "registry-ingress") || !strings.Contains(string(cfg), "192.168.49.100") {
 		t.Fatalf("unexpected minikube cluster-config.yaml:\n%s", cfg)
 	}
+	if !strings.Contains(string(cfg), "apisix-infra-internal-gateway.ingress-infra-internal.svc.cluster.local") {
+		t.Fatalf("minikube cluster-config.yaml must resolve *.api.infra.internal to the infra internal gateway:\n%s", cfg)
+	}
 	infra, _ := os.ReadFile(filepath.Join(dir, "infrastructure", "kustomization.yaml"))
 	if !strings.Contains(string(infra), "cluster-config.yaml") {
 		t.Fatalf("minikube infra kustomization must reference cluster-config.yaml:\n%s", infra)
@@ -234,6 +255,9 @@ func TestGenerateClusterConfigMinikubeCreatesRegistryIngress(t *testing.T) {
 
 const templateClusterKustomization = `apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
+
+configurations:
+  - naming-conf.yaml
 
 resources:
     - flux-system
@@ -261,6 +285,9 @@ patches:
                   - kind: ServiceAccount
                     name: keycloak-operator
                     namespace: example-keycloak
+                  - kind: ServiceAccount
+                    name: keycloak-operator
+                    namespace: infra-keycloak
   - target:
       kind: Kustomization
       name: infra-config
@@ -284,6 +311,7 @@ patches:
                       values:
                         - leptostack-example
                         - leptostack-module-example
+                        - leptostack-infra
 `
 
 func TestAddInternalCADeletePatchTargetsInfraConfig(t *testing.T) {

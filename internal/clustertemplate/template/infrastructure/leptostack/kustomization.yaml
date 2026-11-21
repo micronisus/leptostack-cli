@@ -7,6 +7,11 @@ resources:
   - crossplane.yaml
   - operators.yaml
   - infra-config.yaml
+  # - infra-apisix.yaml
+  # - infra-openbao.yaml
+  # - infra-pgcluster.yaml
+  # - infra-keycloak.yaml
+  # - infra-rustfs.yaml
   - rabbitmq.yaml
   - keycloak-crd.yaml
   - devworkspace-crd.yaml
