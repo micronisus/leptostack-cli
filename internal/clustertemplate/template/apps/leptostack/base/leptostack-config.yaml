@@ -23,6 +23,10 @@ data:
   # projects_hostname: portal-projects
   # objectstore_hostname: portal-objectstore
   # objectstore_internal_hostname: rustfs
+  # rest_hostname: portal-rest
+  # chat_hostname: portal-chat
+  # support_hostname: portal-support
+  # netbox_hostname: portal-netbox
 
   #### Storage Sizes
   # pgcluster_storage_size: 10Gi
@@ -35,6 +39,10 @@ data:
   # rabbitmq_storage_size: 10Gi
   # taiga_static_storage_size: 10Gi
   # taiga_media_storage_size: 10Gi
+  # librechat_mongodb_storage_size: 10Gi
+  # librechat_meilisearch_storage_size: 10Gi
+  # librechat_images_storage_size: 10Gi
+  # dapr_scheduler_storage_size: 4Gi
 
   #### Helm Chart Versions
   # module_core_chart_version: 0.1.14
@@ -54,3 +62,12 @@ data:
   # superset_chart_version: 0.22.8
   # taiga_chart_version: 0.1.0
   # zammad_chart_version: 19.1.6
+  # librechat_chart_version: 3.2.*
+  # dapr_chart_version: 1.19.*
+
+  #### Other Settings
+  # module_name: module-core
+  # rabbitmq_client_secret: <keycloak client secret>
+  # fluxcd_s3_remote_key: dynamic/fluxcd/fluxcd-s3
+  # dapr_ha_enabled: true
+  # dapr_ha_replicas: 3

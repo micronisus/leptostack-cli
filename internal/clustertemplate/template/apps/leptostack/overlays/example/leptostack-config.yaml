@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: leptostack-config
+  namespace: flux-system
+data: 
+  cluster_name: example
+  leptostack_domain: leptostack.example.com
+  leptostack_name: portal
+  leptostack_acme_email: ""

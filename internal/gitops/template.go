@@ -118,7 +118,7 @@ func (m *Manager) generateAppOverlay(repoDir, group, clusterName string) error {
 	if err := os.MkdirAll(overlayDir, 0o755); err != nil {
 		return err
 	}
-	for _, f := range []string{"naming-conf.yaml", "kustomization.yaml"} {
+	for _, f := range []string{"naming-conf.yaml", "kustomization.yaml", "leptostack-config.yaml"} {
 		src := filepath.Join(exampleOverlay, f)
 		if !fileExists(src) {
 			continue
@@ -213,7 +213,7 @@ func (m *Manager) generateClusterConfig(ctx context.Context, repoDir string) err
 		m.IO.Errln("  Added apisix LoadBalancer patch to overlay kustomization.")
 	}
 
-	if !strings.Contains(string(overlayContent), "name: leptostack-config") {
+	if !strings.Contains(string(overlayContent), "/data/cluster_name") {
 		block := fmt.Sprintf(`
   - target:
       kind: ConfigMap

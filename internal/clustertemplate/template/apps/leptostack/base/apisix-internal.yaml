@@ -32,6 +32,13 @@ spec:
           path: /metadata/namespace
           value: ingress-${cluster_name}-internal
     - target:
+        group: external-secrets.io
+        kind: ExternalSecret
+      patch: |-
+        - op: replace
+          path: /metadata/namespace
+          value: ingress-${cluster_name}-internal
+    - target:
         group: helm.toolkit.fluxcd.io
         kind: HelmRelease
         version: v2

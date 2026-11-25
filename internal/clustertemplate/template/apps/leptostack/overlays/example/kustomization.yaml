@@ -11,6 +11,11 @@ resources:
 
 patches:
   - target:
+      kind: ConfigMap
+      name: leptostack-config
+      namespace: flux-system
+    path: leptostack-config.yaml
+  - target:
       kind: Kustomization
       name: module-core
     path: module-core-images.yaml
